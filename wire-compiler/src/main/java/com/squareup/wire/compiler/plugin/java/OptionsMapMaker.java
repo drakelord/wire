@@ -56,7 +56,7 @@ public class OptionsMapMaker {
       return null;
     }
 
-    Map<String, Object> map = new LinkedHashMap<String, Object>();
+    Map<String, Object> map = new LinkedHashMap<>();
     for (Option option : type.getOptions()) {
       insertOption(protoFile, option.getName(), option.getValue(), "", map);
     }
@@ -405,7 +405,7 @@ public class OptionsMapMaker {
     StringBuilder sb = new StringBuilder();
     if (listOrMap instanceof Map) {
       Map<String, Object> map = (Map<String, Object>) listOrMap;
-      String fullyQualifiedName = plugin.javaName(protoFile, fieldType);
+      String fullyQualifiedName = plugin.fullyQualifiedJavaName(fieldType);
       String dollarName = parentType + "$" + parentField;
       FieldInfo fieldInfo = plugin.getField(dollarName);
       boolean emitAsList = !skipAsList && fieldInfo != null && fieldInfo.isRepeated();

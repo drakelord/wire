@@ -300,6 +300,9 @@ public class WireJavaPlugin implements WirePlugin {
         continue;
       }
       String javaName = javaNameNoScope(protoFile, fullyQualifiedName);
+      if (javaName == null) {
+        throw new RuntimeException("Unknown type: " + fullyQualifiedName + " (add to roots?)");
+      }
       String name = shortenJavaName(protoFile, javaName);
       for (MessageType.Field field : extend.getFields()) {
         String fieldType = field.getType();
@@ -1345,6 +1348,11 @@ public class WireJavaPlugin implements WirePlugin {
     String javaName = javaName(protoFile, field.getType());
     if (FieldInfo.isRepeated(field)) javaName = "List<" + javaName + ">";
     return javaName;
+  }
+
+  String fullyQualifiedJavaName(String typeName) {
+    String scalarType = TypeInfo.scalarType(typeName);
+    return scalarType != null ? scalarType : javaSymbolMap.get(typeName);
   }
 
   String javaName(ProtoFile protoFile, String typeName) {

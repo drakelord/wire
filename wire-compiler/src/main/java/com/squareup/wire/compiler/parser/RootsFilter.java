@@ -36,6 +36,18 @@ final class RootsFilter {
   public static Set<ProtoFile> filter(Set<ProtoFile> protoFiles, Set<String> roots) {
     Set<String> kept = new LinkedHashSet<>();
 
+    //roots = new LinkedHashSet<>(roots);
+    //
+    //// Preserve extensions used by options.
+    //roots.add("google.protobuf.EnumOptions");
+    //roots.add("google.protobuf.FieldOptions");
+    //roots.add("google.protobuf.MessageOptions");
+    //roots.add("google.protobuf.EnumValueOptions");
+    //roots.add(EXTEND + "google.protobuf.EnumOptions");
+    //roots.add(EXTEND + "google.protobuf.FieldOptions");
+    //roots.add(EXTEND + "google.protobuf.MessageOptions");
+    //roots.add(EXTEND + "google.protobuf.EnumValueOptions");
+
     Set<String> serviceMethodRoots = new LinkedHashSet<>();
     for (String root : roots) {
       if (root.contains("#")) {
@@ -168,6 +180,8 @@ final class RootsFilter {
           } else {
             throw new RuntimeException("Unknown child type " + child.getClass().getName());
           }
+        } else {
+          child = child;
         }
       }
       return new ProtoFile(obj.getFileName(), obj.getPackageName(), obj.getDependencies(),
@@ -194,13 +208,14 @@ final class RootsFilter {
     if (isScalarType(type)) {
       return;
     }
-    if (kept.contains(type)) {
-      return;
+    if (!kept.contains(type)) {
+      kept.add(type);
+      System.out.println("keep " + type);
+      nodeMap.get(type).keepNodes(typesToKeep, nodeMap, kept);
     }
-    kept.add(type);
-
-    nodeMap.get(type).keepNodes(typesToKeep, nodeMap, kept);
-    if (nodeMap.containsKey(EXTEND + type)) {
+    if (!kept.contains(EXTEND + type) && nodeMap.containsKey(EXTEND + type)) {
+      kept.add(EXTEND + type);
+      System.out.println("keep " + EXTEND + type);
       nodeMap.get(EXTEND + type).keepNodes(typesToKeep, nodeMap, kept);
     }
   }

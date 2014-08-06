@@ -412,7 +412,8 @@ public class WireCompilerTest {
     };
     String[] roots = {
         "squareup.protos.simple.SimpleMessage",
-        "squareup.protos.foreign.ForeignMessage"
+        "squareup.protos.foreign.ForeignMessage",
+        "google.protobuf.MessageOptions"
     };
 
     testProtoWithRegistry(sources, roots, registry, outputs);
@@ -509,16 +510,29 @@ public class WireCompilerTest {
         "custom_options.proto"
     };
     String[] outputs = {
-        "com/squareup/wire/protos/custom_options/FooBar.java",
         "com/squareup/wire/protos/custom_options/Ext_custom_options.java",
-        "com/squareup/wire/protos/custom_options/MessageWithOptions.java"
+        "com/squareup/wire/protos/custom_options/FooBar.java",
+        "com/squareup/wire/protos/custom_options/MessageWithOptions.java",
+        "com/squareup/wire/protos/foreign/Ext_foreign.java",
+        "com/squareup/wire/protos/foreign/ForeignMessage.java",
+        "com/google/protobuf/EnumOptions.java",
+        "com/google/protobuf/EnumValueOptions.java",
+        "com/google/protobuf/FieldOptions.java",
+        "com/google/protobuf/MessageOptions.java",
+        "com/google/protobuf/UniterpretedOption.java",
     };
     String[] roots = {
         "squareup.protos.custom_options.FooBar",
+        "squareup.protos.custom_options.FooBar.More",
         "squareup.protos.custom_options.MessageWithOptions",
+        "google.protobuf.EnumOptions",
         "google.protobuf.EnumValueOptions",
         "google.protobuf.FieldOptions",
-        "google.protobuf.MessageOptions"
+        "google.protobuf.MessageOptions",
+        "extend@google.protobuf.EnumOptions",
+        "extend@google.protobuf.EnumValueOptions",
+        "extend@google.protobuf.FieldOptions",
+        "extend@google.protobuf.MessageOptions"
     };
     testProto(sources, roots, outputs);
   }
@@ -534,7 +548,11 @@ public class WireCompilerTest {
     };
     String[] roots = {
         "squareup.protos.custom_options.FooBar",
-        "squareup.protos.custom_options.MessageWithOptions"
+        "squareup.protos.custom_options.MessageWithOptions",
+        "google.protobuf.EnumOptions",
+        "google.protobuf.EnumValueOptions",
+        "google.protobuf.FieldOptions",
+        "google.protobuf.MessageOptions"
     };
 
     testProtoNoOptions(sources, roots, outputs);

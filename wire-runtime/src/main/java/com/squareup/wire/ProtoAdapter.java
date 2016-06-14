@@ -15,6 +15,7 @@
  */
 package com.squareup.wire;
 
+import com.squareup.wire.Message.Builder;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -39,26 +40,44 @@ import static java.lang.Double.doubleToLongBits;
 import static java.lang.Float.floatToIntBits;
 
 public abstract class ProtoAdapter<E> {
-  static final int FIXED_BOOL_SIZE = 1;
-  static final int FIXED_32_SIZE = 4;
-  static final int FIXED_64_SIZE = 8;
+  private static final int FIXED_BOOL_SIZE = 1;
+  private static final int FIXED_32_SIZE = 4;
+  private static final int FIXED_64_SIZE = 8;
 
-  final FieldEncoding fieldEncoding;
+  private final FieldEncoding fieldEncoding;
   final Class<?> javaType;
+
+  ProtoAdapter<List<E>> packedAdapter;
+  ProtoAdapter<List<E>> repeatedAdapter;
 
   public ProtoAdapter(FieldEncoding fieldEncoding, Class<?> javaType) {
     this.fieldEncoding = fieldEncoding;
     this.javaType = javaType;
   }
 
-  /** Creates a new wire adapter for {@code type}. */
-  public static <M extends Message<M>> ProtoAdapter<M> forMessage(Class<M> type) {
+  /** Creates a new proto adapter for {@code type}. */
+  public static <M extends Message<M, B>, B extends Builder<M, B>> ProtoAdapter<M>
+      newMessageAdapter(Class<M> type) {
     return RuntimeMessageAdapter.create(type);
   }
 
-  /** Creates a new wire adapter for {@code type}. */
-  public static <E extends WireEnum> RuntimeEnumAdapter<E> forEnum(Class<E> type) {
+  /** Creates a new proto adapter for {@code type}. */
+  public static <E extends WireEnum> RuntimeEnumAdapter<E> newEnumAdapter(Class<E> type) {
     return new RuntimeEnumAdapter<>(type);
+  }
+
+  /** Returns the adapter for the type of {@code Message}. */
+  public static <M extends Message> ProtoAdapter<M> get(M message) {
+    return (ProtoAdapter<M>) get(message.getClass());
+  }
+
+  /** Returns the adapter for {@code type}. */
+  public static <M> ProtoAdapter<M> get(Class<M> type) {
+    try {
+      return (ProtoAdapter<M>) type.getField("ADAPTER").get(null);
+    } catch (IllegalAccessException | NoSuchFieldException e) {
+      throw new IllegalArgumentException("failed to access " + type.getName() + "#ADAPTER", e);
+    }
   }
 
   @SuppressWarnings("unchecked")
@@ -69,7 +88,7 @@ public abstract class ProtoAdapter<E> {
       String fieldName = adapterString.substring(hash + 1);
       return (ProtoAdapter<Object>) Class.forName(className).getField(fieldName).get(null);
     } catch (IllegalAccessException | NoSuchFieldException | ClassNotFoundException e) {
-      throw new IllegalStateException("failed to access " + adapterString, e);
+      throw new IllegalArgumentException("failed to access " + adapterString, e);
     }
   }
 
@@ -88,7 +107,7 @@ public abstract class ProtoAdapter<E> {
    * The size of {@code tag} and non-null {@code value} in the wire format. This size includes the
    * tag, type, length-delimited prefix (should the type require one), and value.
    */
-  public int encodedSize(int tag, E value) {
+  public int encodedSizeWithTag(int tag, E value) {
     int size = encodedSize(value);
     if (fieldEncoding == FieldEncoding.LENGTH_DELIMITED) {
       size += varint32Size(size);
@@ -100,7 +119,7 @@ public abstract class ProtoAdapter<E> {
   public abstract void encode(ProtoWriter writer, E value) throws IOException;
 
   /** Write {@code tag} and non-null {@code value} to {@code writer}. */
-  public void encodeTagged(ProtoWriter writer, int tag, E value) throws IOException {
+  public void encodeWithTag(ProtoWriter writer, int tag, E value) throws IOException {
     writer.writeTag(tag, fieldEncoding);
     if (fieldEncoding == FieldEncoding.LENGTH_DELIMITED) {
       writer.writeVarint32(encodedSize(value));
@@ -141,35 +160,26 @@ public abstract class ProtoAdapter<E> {
 
   /** Read an encoded message from {@code bytes}. */
   public final E decode(byte[] bytes) throws IOException {
-    return decode(bytes, ExtensionRegistry.NO_EXTENSIONS);
+    checkNotNull(bytes, "bytes == null");
+    return decode(new Buffer().write(bytes));
   }
 
   /** Read an encoded message from {@code bytes}. */
-  public final E decode(byte[] bytes, ExtensionRegistry extensionRegistry) throws IOException {
+  public final E decode(ByteString bytes) throws IOException {
     checkNotNull(bytes, "bytes == null");
-    return decode(new Buffer().write(bytes), extensionRegistry);
+    return decode(new Buffer().write(bytes));
   }
 
   /** Read an encoded message from {@code stream}. */
   public final E decode(InputStream stream) throws IOException {
-    return decode(stream, ExtensionRegistry.NO_EXTENSIONS);
-  }
-
-  public final E decode(InputStream stream, ExtensionRegistry extensionRegistry)
-      throws IOException {
     checkNotNull(stream, "stream == null");
-    return decode(Okio.buffer(Okio.source(stream)), extensionRegistry);
+    return decode(Okio.buffer(Okio.source(stream)));
   }
 
   /** Read an encoded message from {@code source}. */
   public final E decode(BufferedSource source) throws IOException {
-    return decode(source, ExtensionRegistry.NO_EXTENSIONS);
-  }
-
-  public final E decode(BufferedSource source, ExtensionRegistry extensionRegistry)
-      throws IOException {
     checkNotNull(source, "source == null");
-    return decode(new ProtoReader(source, extensionRegistry));
+    return decode(new ProtoReader(source));
   }
 
   /** Returns a human-readable version of the given {@code value}. */
@@ -372,73 +382,107 @@ public abstract class ProtoAdapter<E> {
   ProtoAdapter<?> withLabel(WireField.Label label) {
     if (label.isRepeated()) {
       return label.isPacked()
-          ? createPacked(this)
-          : createRepeated(this);
+          ? asPacked()
+          : asRepeated();
     }
     return this;
   }
 
-  private static <T> ProtoAdapter<List<T>> createPacked(final ProtoAdapter<T> adapter) {
-    if (adapter.fieldEncoding == FieldEncoding.LENGTH_DELIMITED) {
+  /** Returns an adapter for {@code E} but as a packed, repeated value. */
+  public final ProtoAdapter<List<E>> asPacked() {
+    ProtoAdapter<List<E>> adapter = packedAdapter;
+    return adapter != null ? adapter : (packedAdapter = createPacked());
+  }
+
+  /** Returns an adapter for {@code E} but as a repeated value. */
+  public final ProtoAdapter<List<E>> asRepeated() {
+    ProtoAdapter<List<E>> adapter = repeatedAdapter;
+    return adapter != null ? adapter : (repeatedAdapter = createRepeated());
+  }
+
+  private ProtoAdapter<List<E>> createPacked() {
+    if (fieldEncoding == FieldEncoding.LENGTH_DELIMITED) {
       throw new IllegalArgumentException("Unable to pack a length-delimited type.");
     }
-    return new ProtoAdapter<List<T>>(FieldEncoding.LENGTH_DELIMITED, List.class) {
-      @Override public int encodedSize(List<T> value) {
+    return new ProtoAdapter<List<E>>(FieldEncoding.LENGTH_DELIMITED, List.class) {
+      @Override public void encodeWithTag(ProtoWriter writer, int tag, List<E> value)
+          throws IOException {
+        if (!value.isEmpty()) {
+          super.encodeWithTag(writer, tag, value);
+        }
+      }
+
+      @Override public int encodedSize(List<E> value) {
         int size = 0;
         for (int i = 0, count = value.size(); i < count; i++) {
-          size += adapter.encodedSize(value.get(i));
+          size += ProtoAdapter.this.encodedSize(value.get(i));
         }
         return size;
       }
 
-      @Override public void encode(ProtoWriter writer, List<T> value) throws IOException {
+      @Override public int encodedSizeWithTag(int tag, List<E> value) {
+        return value.isEmpty() ? 0 : super.encodedSizeWithTag(tag, value);
+      }
+
+      @Override public void encode(ProtoWriter writer, List<E> value) throws IOException {
         for (int i = 0, count = value.size(); i < count; i++) {
-          adapter.encode(writer, value.get(i));
+          ProtoAdapter.this.encode(writer, value.get(i));
         }
       }
 
-      @Override public List<T> decode(ProtoReader reader) throws IOException {
-        throw new UnsupportedOperationException();
+      @Override public List<E> decode(ProtoReader reader) throws IOException {
+        E value = ProtoAdapter.this.decode(reader);
+        return Collections.singletonList(value);
       }
 
-      @Override public List<T> redact(List<T> value) {
+      @Override public List<E> redact(List<E> value) {
         return Collections.emptyList();
       }
     };
   }
 
-  private static <T> ProtoAdapter<List<T>> createRepeated(final ProtoAdapter<T> adapter) {
-    return new ProtoAdapter<List<T>>(adapter.fieldEncoding, List.class) {
-      @Override public int encodedSize(List<T> value) {
-        throw new UnsupportedOperationException();
+  private ProtoAdapter<List<E>> createRepeated() {
+    return new ProtoAdapter<List<E>>(fieldEncoding, List.class) {
+      @Override public int encodedSize(List<E> value) {
+        throw new UnsupportedOperationException("Repeated values can only be sized with a tag.");
       }
 
-      @Override public int encodedSize(int tag, List<T> value) {
+      @Override public int encodedSizeWithTag(int tag, List<E> value) {
         int size = 0;
         for (int i = 0, count = value.size(); i < count; i++) {
-          size += adapter.encodedSize(tag, value.get(i));
+          size += ProtoAdapter.this.encodedSizeWithTag(tag, value.get(i));
         }
         return size;
       }
 
-      @Override public void encode(ProtoWriter writer, List<T> value) throws IOException {
-        throw new UnsupportedOperationException();
+      @Override public void encode(ProtoWriter writer, List<E> value) {
+        throw new UnsupportedOperationException("Repeated values can only be encoded with a tag.");
       }
 
-      @Override public void encodeTagged(ProtoWriter writer, int tag, List<T> value)
+      @Override public void encodeWithTag(ProtoWriter writer, int tag, List<E> value)
           throws IOException {
         for (int i = 0, count = value.size(); i < count; i++) {
-          adapter.encodeTagged(writer, tag, value.get(i));
+          ProtoAdapter.this.encodeWithTag(writer, tag, value.get(i));
         }
       }
 
-      @Override public List<T> decode(ProtoReader reader) throws IOException {
-        throw new UnsupportedOperationException();
+      @Override public List<E> decode(ProtoReader reader) throws IOException {
+        E value = ProtoAdapter.this.decode(reader);
+        return Collections.singletonList(value);
       }
 
-      @Override public List<T> redact(List<T> value) {
+      @Override public List<E> redact(List<E> value) {
         return Collections.emptyList();
       }
     };
+  }
+
+  public static final class EnumConstantNotFoundException extends IllegalArgumentException {
+    public final int value;
+
+    EnumConstantNotFoundException(int value, Class<?> type) {
+      super("Unknown enum tag " + value + " for " + type.getCanonicalName());
+      this.value = value;
+    }
   }
 }

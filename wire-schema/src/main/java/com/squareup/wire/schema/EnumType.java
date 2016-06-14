@@ -18,36 +18,43 @@ package com.squareup.wire.schema;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
-import com.squareup.wire.ProtoType;
 import com.squareup.wire.schema.internal.parser.EnumElement;
 import java.util.Collection;
 import java.util.Map;
-import java.util.NavigableSet;
+
+import static com.squareup.wire.schema.Options.ENUM_OPTIONS;
 
 public final class EnumType extends Type {
+  static final ProtoMember ALLOW_ALIAS = ProtoMember.get(ENUM_OPTIONS, "allow_alias");
+
   private final ProtoType protoType;
-  private final EnumElement element;
+  private final Location location;
+  private final String documentation;
+  private final String name;
   private final ImmutableList<EnumConstant> constants;
   private final Options options;
+  private Object allowAlias;
 
-  EnumType(ProtoType protoType, EnumElement element,
+  private EnumType(ProtoType protoType, Location location, String documentation, String name,
       ImmutableList<EnumConstant> constants, Options options) {
     this.protoType = protoType;
-    this.element = element;
+    this.location = location;
+    this.documentation = documentation;
+    this.name = name;
     this.constants = constants;
     this.options = options;
   }
 
   @Override public Location location() {
-    return element.location();
+    return location;
   }
 
-  @Override public ProtoType name() {
+  @Override public ProtoType type() {
     return protoType;
   }
 
   @Override public String documentation() {
-    return element.documentation();
+    return documentation;
   }
 
   @Override public Options options() {
@@ -56,6 +63,10 @@ public final class EnumType extends Type {
 
   @Override public ImmutableList<Type> nestedTypes() {
     return ImmutableList.of(); // Enums do not allow nested type declarations.
+  }
+
+  public boolean allowAlias() {
+    return "true".equals(allowAlias);
   }
 
   /** Returns the constant named {@code name}, or null if this enum has no such constant. */
@@ -82,10 +93,21 @@ public final class EnumType extends Type {
     return constants;
   }
 
+  @Override void link(Linker linker) {
+  }
+
+  @Override void linkOptions(Linker linker) {
+    options.link(linker);
+    for (EnumConstant constant : constants) {
+      constant.linkOptions(linker);
+    }
+    allowAlias = options.get(ALLOW_ALIAS);
+  }
+
   @Override void validate(Linker linker) {
     linker = linker.withContext(this);
 
-    if (!"true".equals(options.get("allow_alias"))) {
+    if (!"true".equals(allowAlias)) {
       validateTagUniqueness(linker);
     }
   }
@@ -110,33 +132,37 @@ public final class EnumType extends Type {
     }
   }
 
-  @Override void link(Linker linker) {
-  }
-
-  @Override void linkOptions(Linker linker) {
-    options.link(linker);
-    for (EnumConstant constant : constants) {
-      constant.linkOptions(linker);
-    }
-  }
-
-  @Override Type retainAll(NavigableSet<String> identifiers) {
-    String typeName = protoType.toString();
-
+  @Override Type retainAll(Schema schema, MarkSet markSet) {
     // If this type is not retained, prune it.
-    if (!identifiers.contains(typeName)) return null;
+    if (!markSet.contains(protoType)) return null;
 
-    ImmutableList<EnumConstant> retainedConstants = constants;
-    if (Pruner.hasMarkedMember(identifiers, protoType)) {
-      ImmutableList.Builder<EnumConstant> retainedConstantsBuilder = ImmutableList.builder();
-      for (EnumConstant constant : constants) {
-        if (identifiers.contains(typeName + '#' + constant.name())) {
-          retainedConstantsBuilder.add(constant);
-        }
+    ImmutableList.Builder<EnumConstant> retainedConstants = ImmutableList.builder();
+    for (EnumConstant constant : constants) {
+      if (markSet.contains(ProtoMember.get(protoType, constant.name()))) {
+        retainedConstants.add(constant.retainAll(schema, markSet));
       }
-      retainedConstants = retainedConstantsBuilder.build();
     }
 
-    return new EnumType(protoType, element, retainedConstants, options);
+    EnumType result = new EnumType(protoType, location, documentation, name,
+        retainedConstants.build(), options.retainAll(schema, markSet));
+    result.allowAlias = allowAlias;
+    return result;
+  }
+
+  static EnumType fromElement(ProtoType protoType, EnumElement enumElement) {
+    ImmutableList<EnumConstant> constants = EnumConstant.fromElements(enumElement.constants());
+    Options options = new Options(Options.ENUM_OPTIONS, enumElement.options());
+
+    return new EnumType(protoType, enumElement.location(), enumElement.documentation(),
+        enumElement.name(), constants, options);
+  }
+
+  EnumElement toElement() {
+    return EnumElement.builder(location)
+        .name(name)
+        .documentation(documentation)
+        .constants(EnumConstant.toElements(constants))
+        .options(options.toElements())
+        .build();
   }
 }

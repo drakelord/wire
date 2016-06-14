@@ -16,43 +16,55 @@
 package com.squareup.wire.schema;
 
 import com.google.common.collect.ImmutableList;
-import com.squareup.wire.ProtoType;
 import com.squareup.wire.schema.internal.parser.MessageElement;
-import java.util.NavigableSet;
+import com.squareup.wire.schema.internal.parser.TypeElement;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 public final class MessageType extends Type {
   private final ProtoType protoType;
-  private final MessageElement element;
-  private final ImmutableList<Field> fields;
+  private final Location location;
+  private final String documentation;
+  private final String name;
+  private final ImmutableList<Field> declaredFields;
+  private final List<Field> extensionFields;
   private final ImmutableList<OneOf> oneOfs;
   private final ImmutableList<Type> nestedTypes;
   private final ImmutableList<Extensions> extensionsList;
+  private final ImmutableList<Reserved> reserveds;
   private final Options options;
 
-  MessageType(ProtoType protoType, MessageElement element,
-      ImmutableList<Field> fields, ImmutableList<OneOf> oneOfs,
-      ImmutableList<Type> nestedTypes, ImmutableList<Extensions> extensionsList, Options options) {
+  private MessageType(ProtoType protoType, Location location, String documentation, String name,
+      ImmutableList<Field> declaredFields, List<Field> extensionFields, ImmutableList<OneOf> oneOfs,
+      ImmutableList<Type> nestedTypes, ImmutableList<Extensions> extensionsList,
+      ImmutableList<Reserved> reserveds, Options options) {
     this.protoType = protoType;
-    this.element = element;
-    this.fields = fields;
+    this.location = location;
+    this.documentation = documentation;
+    this.name = name;
+    this.declaredFields = declaredFields;
+    this.extensionFields = extensionFields;
     this.oneOfs = oneOfs;
     this.nestedTypes = nestedTypes;
     this.extensionsList = extensionsList;
+    this.reserveds = reserveds;
     this.options = checkNotNull(options);
   }
 
   @Override public Location location() {
-    return element.location();
+    return location;
   }
 
-  @Override public ProtoType name() {
+  @Override public ProtoType type() {
     return protoType;
   }
 
   @Override public String documentation() {
-    return element.documentation();
+    return documentation;
   }
 
   @Override public ImmutableList<Type> nestedTypes() {
@@ -64,7 +76,14 @@ public final class MessageType extends Type {
   }
 
   public ImmutableList<Field> fields() {
-    return fields;
+    return ImmutableList.<Field>builder()
+        .addAll(declaredFields)
+        .addAll(extensionFields)
+        .build();
+  }
+
+  public ImmutableList<Field> extensionFields() {
+    return ImmutableList.copyOf(extensionFields);
   }
 
   public ImmutableList<Field> getRequiredFields() {
@@ -79,7 +98,8 @@ public final class MessageType extends Type {
 
   public ImmutableList<Field> fieldsAndOneOfFields() {
     ImmutableList.Builder<Field> result = ImmutableList.builder();
-    result.addAll(fields);
+    result.addAll(declaredFields);
+    result.addAll(extensionFields);
     for (OneOf oneOf : oneOfs) {
       result.addAll(oneOf.fields());
     }
@@ -88,8 +108,28 @@ public final class MessageType extends Type {
 
   /** Returns the field named {@code name}, or null if this type has no such field. */
   public Field field(String name) {
-    for (Field field : fields) {
+    for (Field field : declaredFields) {
       if (field.name().equals(name)) {
+        return field;
+      }
+    }
+    for (OneOf oneOf : oneOfs) {
+      for (Field field : oneOf.fields()) {
+        if (field.name().equals(name)) {
+          return field;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns the field with the qualified name {@code qualifiedName}, or null if this type has no
+   * such field.
+   */
+  public Field extensionField(String qualifiedName) {
+    for (Field field : extensionFields) {
+      if (field.qualifiedName().equals(qualifiedName)) {
         return field;
       }
     }
@@ -98,7 +138,12 @@ public final class MessageType extends Type {
 
   /** Returns the field tagged {@code tag}, or null if this type has no such field. */
   public Field field(int tag) {
-    for (Field field : fields) {
+    for (Field field : declaredFields) {
+      if (field.tag() == tag) {
+        return field;
+      }
+    }
+    for (Field field : extensionFields) {
       if (field.tag() == tag) {
         return field;
       }
@@ -114,24 +159,25 @@ public final class MessageType extends Type {
     return extensionsList;
   }
 
-  void validate(Linker linker) {
-    linker = linker.withContext(this);
-    linker.validateTags(fieldsAndOneOfFields(), linker.extensions(name()));
-    linker.validateEnumConstantNameUniqueness(nestedTypes);
-    for (Field field : fieldsAndOneOfFields()) {
-      field.validate(linker, false);
+  Map<String, Field> extensionFieldsMap() {
+    // TODO(jwilson): simplify this to just resolve field values directly.
+    Map<String, Field> extensionsForType = new LinkedHashMap<>();
+    for (Field field : extensionFields) {
+      extensionsForType.put(field.qualifiedName(), field);
     }
-    for (Type type : nestedTypes) {
-      type.validate(linker);
-    }
-    for (Extensions extensions : extensionsList) {
-      extensions.validate(linker);
-    }
+    return extensionsForType;
+  }
+
+  void addExtensionFields(ImmutableList<Field> fields) {
+    extensionFields.addAll(fields);
   }
 
   void link(Linker linker) {
     linker = linker.withContext(this);
-    for (Field field : fields) {
+    for (Field field : declaredFields) {
+      field.link(linker);
+    }
+    for (Field field : extensionFields) {
       field.link(linker);
     }
     for (OneOf oneOf : oneOfs) {
@@ -147,7 +193,10 @@ public final class MessageType extends Type {
     for (Type type : nestedTypes) {
       type.linkOptions(linker);
     }
-    for (Field field : fields) {
+    for (Field field : declaredFields) {
+      field.linkOptions(linker);
+    }
+    for (Field field : extensionFields) {
       field.linkOptions(linker);
     }
     for (OneOf oneOf : oneOfs) {
@@ -156,36 +205,96 @@ public final class MessageType extends Type {
     options.link(linker);
   }
 
-  @Override Type retainAll(NavigableSet<String> identifiers) {
+  void validate(Linker linker) {
+    linker = linker.withContext(this);
+    linker.validateFields(fieldsAndOneOfFields(), reserveds);
+    linker.validateEnumConstantNameUniqueness(nestedTypes);
+    for (Field field : fieldsAndOneOfFields()) {
+      field.validate(linker);
+    }
+    for (Type type : nestedTypes) {
+      type.validate(linker);
+    }
+    for (Extensions extensions : extensionsList) {
+      extensions.validate(linker);
+    }
+  }
+
+  @Override Type retainAll(Schema schema, MarkSet markSet) {
     ImmutableList.Builder<Type> retainedNestedTypesBuilder = ImmutableList.builder();
     for (Type nestedType : nestedTypes) {
-      Type retainedNestedType = nestedType.retainAll(identifiers);
+      Type retainedNestedType = nestedType.retainAll(schema, markSet);
       if (retainedNestedType != null) {
         retainedNestedTypesBuilder.add(retainedNestedType);
       }
     }
 
-    String typeName = protoType.toString();
-
-    // If this type is not retained, and none of its nested types are retained, prune it.
     ImmutableList<Type> retainedNestedTypes = retainedNestedTypesBuilder.build();
-    if (!identifiers.contains(typeName) && retainedNestedTypes.isEmpty()) {
-      return null;
-    }
-
-    // If any of our fields are specifically retained, retain only that set.
-    ImmutableList<Field> retainedFields = fields;
-    if (Pruner.hasMarkedMember(identifiers, protoType)) {
-      ImmutableList.Builder<Field> retainedFieldsBuilder = ImmutableList.builder();
-      for (Field field : fields) {
-        if (identifiers.contains(typeName + '#' + field.name())) {
-          retainedFieldsBuilder.add(field);
-        }
+    if (!markSet.contains(protoType)) {
+      // If this type is not retained, and none of its nested types are retained, prune it.
+      if (retainedNestedTypes.isEmpty()) {
+        return null;
       }
-      retainedFields = retainedFieldsBuilder.build();
+      // If this type is not retained but retained nested types, replace it with an enclosing type.
+      return new EnclosingType(location, protoType, documentation, retainedNestedTypes);
     }
 
-    return new MessageType(protoType, element, retainedFields, oneOfs, retainedNestedTypes,
-        extensionsList, options);
+    ImmutableList.Builder<OneOf> retainedOneOfsBuilder = ImmutableList.builder();
+    for (OneOf oneOf : oneOfs) {
+      OneOf retainedOneOf = oneOf.retainAll(schema, markSet, protoType);
+      if (retainedOneOf != null) {
+        retainedOneOfsBuilder.add(retainedOneOf);
+      }
+    }
+    ImmutableList<OneOf> retainedOneOfs = retainedOneOfsBuilder.build();
+
+    return new MessageType(protoType, location, documentation, name,
+        Field.retainAll(schema, markSet, protoType, declaredFields),
+        Field.retainAll(schema, markSet, protoType, extensionFields), retainedOneOfs,
+        retainedNestedTypes, extensionsList, reserveds, options.retainAll(schema, markSet));
+  }
+
+  static MessageType fromElement(String packageName, ProtoType protoType,
+      MessageElement messageElement) {
+    if (!messageElement.groups().isEmpty()) {
+      throw new IllegalStateException("'group' is not supported");
+    }
+
+    ImmutableList<Field> declaredFields =
+        Field.fromElements(packageName, messageElement.fields(), false);
+
+    // Extension fields be populated during linking.
+    List<Field> extensionFields = new ArrayList<>();
+
+    ImmutableList<OneOf> oneOfs = OneOf.fromElements(packageName, messageElement.oneOfs(), false);
+
+    ImmutableList.Builder<Type> nestedTypes = ImmutableList.builder();
+    for (TypeElement nestedType : messageElement.nestedTypes()) {
+      nestedTypes.add(Type.get(packageName, protoType.nestedType(nestedType.name()), nestedType));
+    }
+
+    ImmutableList<Extensions> extensionsList =
+        Extensions.fromElements(messageElement.extensions());
+
+    ImmutableList<Reserved> reserveds = Reserved.fromElements(messageElement.reserveds());
+
+    Options options = new Options(Options.MESSAGE_OPTIONS, messageElement.options());
+
+    return new MessageType(protoType, messageElement.location(), messageElement.documentation(),
+        messageElement.name(), declaredFields, extensionFields, oneOfs, nestedTypes.build(),
+        extensionsList, reserveds, options);
+  }
+
+  MessageElement toElement() {
+    return MessageElement.builder(location)
+        .documentation(documentation)
+        .name(name)
+        .options(options.toElements())
+        .fields(Field.toElements(declaredFields))
+        .nestedTypes(Type.toElements(nestedTypes))
+        .oneOfs(OneOf.toElements(oneOfs))
+        .extensions(Extensions.toElements(extensionsList))
+        .reserveds(Reserved.toElements(reserveds))
+        .build();
   }
 }

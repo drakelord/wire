@@ -18,14 +18,13 @@ package com.squareup.wire;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Collections;
 import java.util.List;
 
 /**
  * Read, write, and describe a tag within a message. This class knows how to assign fields to a
  * builder object, and how to extract values from a message object.
  */
-final class FieldBinding<M extends Message<M>, B extends Message.Builder<M, B>> {
+final class FieldBinding<M extends Message<M, B>, B extends Message.Builder<M, B>> {
   private static Field getBuilderField(Class<?> builderType, String name) {
     try {
       return builderType.getField(name);
@@ -83,12 +82,8 @@ final class FieldBinding<M extends Message<M>, B extends Message.Builder<M, B>> 
   void value(B builder, Object value) {
     if (label.isRepeated()) {
       try {
-        List<?> list = (List<?>) builderField.get(builder);
-        if (list == Collections.emptyList()) {
-          list = new ImmutableList();
-          builderField.set(builder, list);
-        }
-        ((ImmutableList<Object>) list).list.add(value);
+        List<Object> list = (List<Object>) builderField.get(builder);
+        list.add(value);
       } catch (IllegalAccessException e) {
         throw new AssertionError(e);
       }

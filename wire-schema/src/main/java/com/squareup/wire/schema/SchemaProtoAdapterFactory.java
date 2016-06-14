@@ -16,10 +16,9 @@
 package com.squareup.wire.schema;
 
 import com.squareup.wire.FieldEncoding;
+import com.squareup.wire.ProtoAdapter;
 import com.squareup.wire.ProtoReader;
 import com.squareup.wire.ProtoWriter;
-import com.squareup.wire.ProtoAdapter;
-import com.squareup.wire.ProtoType;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -57,6 +56,8 @@ final class SchemaProtoAdapterFactory {
   }
 
   public ProtoAdapter<Object> get(ProtoType protoType) {
+    if (protoType.isMap()) throw new UnsupportedOperationException("map types not supported");
+
     ProtoAdapter<?> result = adapterMap.get(protoType);
     if (result != null) {
       return (ProtoAdapter<Object>) result;
@@ -109,7 +110,7 @@ final class SchemaProtoAdapterFactory {
       } else if (value instanceof Integer) {
         writer.writeVarint32((Integer) value);
       } else {
-        throw new IllegalArgumentException("unexpected " + enumType.name() + ": " + value);
+        throw new IllegalArgumentException("unexpected " + enumType.type() + ": " + value);
       }
     }
 
@@ -143,10 +144,10 @@ final class SchemaProtoAdapterFactory {
         ProtoAdapter<Object> protoAdapter = (ProtoAdapter<Object>) field.protoAdapter;
         if (field.repeated) {
           for (Object o : (List<?>) entry.getValue()) {
-            size += protoAdapter.encodedSize(field.tag, o);
+            size += protoAdapter.encodedSizeWithTag(field.tag, o);
           }
         } else {
-          size += protoAdapter.encodedSize(field.tag, entry.getValue());
+          size += protoAdapter.encodedSizeWithTag(field.tag, entry.getValue());
         }
       }
       return size;
@@ -160,10 +161,10 @@ final class SchemaProtoAdapterFactory {
         ProtoAdapter<Object> protoAdapter = (ProtoAdapter<Object>) field.protoAdapter;
         if (field.repeated) {
           for (Object o : (List<?>) entry.getValue()) {
-            protoAdapter.encodeTagged(writer, field.tag, o);
+            protoAdapter.encodeWithTag(writer, field.tag, o);
           }
         } else {
-          protoAdapter.encodeTagged(writer, field.tag, entry.getValue());
+          protoAdapter.encodeWithTag(writer, field.tag, entry.getValue());
         }
       }
     }

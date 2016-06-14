@@ -32,7 +32,9 @@ public abstract class MessageElement implements TypeElement {
         .oneOfs(ImmutableList.<OneOfElement>of())
         .nestedTypes(ImmutableList.<TypeElement>of())
         .extensions(ImmutableList.<ExtensionsElement>of())
-        .options(ImmutableList.<OptionElement>of());
+        .options(ImmutableList.<OptionElement>of())
+        .reserveds(ImmutableList.<ReservedElement>of())
+        .groups(ImmutableList.<GroupElement>of());
   }
 
   @Override public abstract Location location();
@@ -40,9 +42,11 @@ public abstract class MessageElement implements TypeElement {
   @Override public abstract String documentation();
   @Override public abstract ImmutableList<TypeElement> nestedTypes();
   @Override public abstract ImmutableList<OptionElement> options();
+  public abstract ImmutableList<ReservedElement> reserveds();
   public abstract ImmutableList<FieldElement> fields();
   public abstract ImmutableList<OneOfElement> oneOfs();
   public abstract ImmutableList<ExtensionsElement> extensions();
+  public abstract ImmutableList<GroupElement> groups();
 
   @Override public final String toSchema() {
     StringBuilder builder = new StringBuilder();
@@ -50,6 +54,12 @@ public abstract class MessageElement implements TypeElement {
     builder.append("message ")
         .append(name())
         .append(" {");
+    if (!reserveds().isEmpty()) {
+      builder.append('\n');
+      for (ReservedElement reserved : reserveds()) {
+        appendIndented(builder, reserved.toSchema());
+      }
+    }
     if (!options().isEmpty()) {
       builder.append('\n');
       for (OptionElement option : options()) {
@@ -66,6 +76,12 @@ public abstract class MessageElement implements TypeElement {
       builder.append('\n');
       for (OneOfElement oneOf : oneOfs()) {
         appendIndented(builder, oneOf.toSchema());
+      }
+    }
+    if (!groups().isEmpty()) {
+      builder.append('\n');
+      for (GroupElement group : groups()) {
+        appendIndented(builder, group.toSchema());
       }
     }
     if (!extensions().isEmpty()) {
@@ -93,6 +109,8 @@ public abstract class MessageElement implements TypeElement {
     Builder nestedTypes(ImmutableList<TypeElement> types);
     Builder extensions(ImmutableList<ExtensionsElement> extensions);
     Builder options(ImmutableList<OptionElement> options);
+    Builder reserveds(ImmutableList<ReservedElement> reserveds);
+    Builder groups(ImmutableList<GroupElement> groups);
     MessageElement build();
   }
 }

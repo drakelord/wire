@@ -60,7 +60,6 @@ public final class ProtoReader {
   private static final int STATE_PACKED_TAG = 7; // Note: not a field encoding.
 
   private final BufferedSource source;
-  private final ExtensionRegistry extensionRegistry;
 
   /** The current position in the input source, starting at 0 and increasing monotonically. */
   private long pos = 0;
@@ -77,13 +76,8 @@ public final class ProtoReader {
   /** The encoding of the next value to be read. */
   private FieldEncoding nextFieldEncoding;
 
-  public ProtoReader(BufferedSource source, ExtensionRegistry extensionRegistry) {
-    this.source = source;
-    this.extensionRegistry = extensionRegistry;
-  }
-
   public ProtoReader(BufferedSource source) {
-    this(source, ExtensionRegistry.NO_EXTENSIONS);
+    this.source = source;
   }
 
   /**
@@ -186,19 +180,11 @@ public final class ProtoReader {
     return -1;
   }
 
-  public <T extends Message<T>> Extension<T, ?> getExtension(Class<T> messageType, int tag)
-      throws IOException {
-    Extension<T, ?> extension = extensionRegistry.get(messageType, tag);
-    return extension != null
-        ? extension
-        : Extension.unknown(messageType, tag, peekFieldEncoding());
-  }
-
   /**
    * Returns the encoding of the next field value. {@link #nextTag()} must be called before
    * this method.
    */
-  public FieldEncoding peekFieldEncoding() throws IOException {
+  public FieldEncoding peekFieldEncoding() {
     return nextFieldEncoding;
   }
 

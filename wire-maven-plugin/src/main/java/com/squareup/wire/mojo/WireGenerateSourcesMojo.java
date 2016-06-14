@@ -1,8 +1,19 @@
 package com.squareup.wire.mojo;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
-import com.squareup.wire.WireCompiler;
+import com.google.common.base.Stopwatch;
+import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.JavaFile;
+import com.squareup.javapoet.TypeSpec;
+import com.squareup.wire.java.JavaGenerator;
+import com.squareup.wire.schema.IdentifierSet;
+import com.squareup.wire.schema.Location;
+import com.squareup.wire.schema.ProtoFile;
+import com.squareup.wire.schema.Schema;
+import com.squareup.wire.schema.SchemaLoader;
+import com.squareup.wire.schema.Type;
+import java.io.File;
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import org.apache.maven.plugin.AbstractMojo;
@@ -13,14 +24,10 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
-/**
- * A maven mojo that triggers the Wire compiler.
- */
+/** A maven mojo that executes Wire's JavaGenerator. */
 @Mojo(name = "generate-sources", defaultPhase = LifecyclePhase.GENERATE_SOURCES)
 public class WireGenerateSourcesMojo extends AbstractMojo {
-  /**
-   * The root of the proto source directory.
-   */
+  /** The root of the proto source directory. */
   @Parameter(
       property = "wire.protoSourceDirectory",
       defaultValue = "${project.basedir}/src/main/proto")
@@ -29,24 +36,22 @@ public class WireGenerateSourcesMojo extends AbstractMojo {
   @Parameter(property = "wire.protoPaths")
   private String[] protoPaths;
 
-  @Parameter(property = "wire.noOptions")
-  private boolean noOptions;
+  @Parameter(property = "wire.android")
+  private boolean emitAndroid;
 
-  @Parameter(property = "wire.enumOptions")
-  private String[] enumOptions;
+  @Parameter(property = "wire.compact")
+  private boolean emitCompact;
 
-  @Parameter(property = "wire.roots")
-  private String[] roots;
+  @Parameter(property = "wire.includes")
+  private String[] includes;
+
+  @Parameter(property = "wire.excludes")
+  private String[] excludes;
 
   @Parameter(property = "wire.serviceFactory")
   private String serviceFactory;
 
-  @Parameter(property = "wire.registryClass")
-  private String registryClass;
-
-  /**
-   * List of proto files to compile relative to ${protoPaths}.
-   */
+  /** List of proto files to compile relative to ${protoPaths}. */
   @Parameter(property = "wire.protoFiles", required = true)
   private String[] protoFiles;
 
@@ -62,51 +67,117 @@ public class WireGenerateSourcesMojo extends AbstractMojo {
   private MavenProject project;
 
   @Override public void execute() throws MojoExecutionException, MojoFailureException {
+    // Add the directory into which generated sources are placed as a compiled source root.
     project.addCompileSourceRoot(generatedSourceDirectory);
 
-    //TODO(shawn) only compile when things have changed.
-    compileProtos();
-  }
-
-  private void compileProtos() throws MojoExecutionException {
-    List<String> args = Lists.newArrayList();
-    if (protoPaths != null && protoPaths.length > 0) {
-      for (String protoPath : protoPaths) {
-        args.add("--proto_path=" + protoPath);
-      }
-    } else {
-      args.add("--proto_path=" + protoSourceDirectory);
-    }
-    args.add("--java_out=" + generatedSourceDirectory);
-    if (noOptions) {
-      args.add("--no_options");
-    }
-    if (enumOptions != null && enumOptions.length > 0) {
-      args.add("--enum_options=" + Joiner.on(',').join(enumOptions));
-    }
-    if (registryClass != null) {
-      args.add("--registry_class=" + registryClass);
-    }
-    if (roots != null && roots.length > 0) {
-      args.add("--roots=" + Joiner.on(',').join(roots));
-    }
-    if (serviceFactory != null) {
-      args.add("--service_factory=" + serviceFactory);
-    }
-    Collections.addAll(args, protoFiles);
-
-    getLog().info("Invoking wire compiler with arguments:");
-    getLog().info(Joiner.on('\n').join(args));
     try {
-      // TODO(shawn) we don't have a great programatic interface to the compiler.
-      // Not all exceptions should result in MojoFailureExceptions (i.e. bugs in this plugin that
-      // invoke the compiler incorrectly).
-      WireCompiler.main(args.toArray(new String[args.size()]));
+      List<String> directories = protoPaths != null && protoPaths.length > 0
+          ? Arrays.asList(protoPaths)
+          : Collections.singletonList(protoSourceDirectory);
+      List<String> protoFilesList = Arrays.asList(protoFiles);
+      Schema schema = loadSchema(directories, protoFilesList);
 
-      // Add the directory into which generated sources are placed as a compiled source root.
-      project.addCompileSourceRoot(generatedSourceDirectory);
+      IdentifierSet identifierSet = identifierSet();
+      if (!identifierSet.isEmpty()) {
+        schema = retainRoots(identifierSet, schema);
+      }
+
+      JavaGenerator javaGenerator = JavaGenerator.get(schema)
+          .withAndroid(emitAndroid)
+          .withCompact(emitCompact);
+
+      for (ProtoFile protoFile : schema.protoFiles()) {
+        if (!protoFilesList.contains(protoFile.location().path())) {
+          continue; // Don't emit anything for files not explicitly compiled.
+        }
+
+        for (Type type : protoFile.types()) {
+          Stopwatch stopwatch = Stopwatch.createStarted();
+          TypeSpec typeSpec = javaGenerator.generateType(type);
+          ClassName javaTypeName = (ClassName) javaGenerator.typeName(type.type());
+          writeJavaFile(javaTypeName, typeSpec, type.location().withoutBase());
+          getLog().info(String.format("Generated %s in %s", javaTypeName, stopwatch));
+        }
+      }
     } catch (Exception e) {
       throw new MojoExecutionException("Wire Plugin: Failure compiling proto sources.", e);
+    }
+  }
+
+  private IdentifierSet identifierSet() {
+    IdentifierSet.Builder identifierSetBuilder = new IdentifierSet.Builder();
+    if (includes != null) {
+      for (String identifier : includes) {
+        identifierSetBuilder.include(identifier);
+      }
+    }
+    if (excludes != null) {
+      for (String identifier : excludes) {
+        identifierSetBuilder.exclude(identifier);
+      }
+    }
+    return identifierSetBuilder.build();
+  }
+
+  private Schema retainRoots(IdentifierSet identifierSet, Schema schema) {
+    Stopwatch stopwatch = Stopwatch.createStarted();
+    int oldSize = countTypes(schema);
+
+    Schema prunedSchema = schema.prune(identifierSet);
+    int newSize = countTypes(prunedSchema);
+
+    for (String rule : identifierSet.unusedIncludes()) {
+      getLog().warn(String.format("Unused include: %s", rule));
+    }
+    for (String rule : identifierSet.unusedExcludes()) {
+      getLog().warn(String.format("Unused exclude: %s", rule));
+    }
+
+    getLog().info(String.format("Pruned schema from %s types to %s types in %s",
+        oldSize, newSize, stopwatch));
+
+    return prunedSchema;
+  }
+
+  private int countTypes(Schema prunedSchema) {
+    int result = 0;
+    for (ProtoFile protoFile : prunedSchema.protoFiles()) {
+      result += protoFile.types().size();
+    }
+    return result;
+  }
+
+  private Schema loadSchema(List<String> directories, List<String> protos) throws IOException {
+    Stopwatch stopwatch = Stopwatch.createStarted();
+
+    SchemaLoader schemaLoader = new SchemaLoader();
+    for (String directory : directories) {
+      schemaLoader.addSource(new File(directory));
+    }
+    for (String proto : protos) {
+      schemaLoader.addProto(proto);
+    }
+    Schema schema = schemaLoader.load();
+
+    getLog().info(String.format("Loaded %s proto files in %s",
+        schema.protoFiles().size(), stopwatch));
+
+    return schema;
+  }
+
+  private void writeJavaFile(ClassName javaTypeName, TypeSpec typeSpec, Location location)
+      throws IOException {
+    JavaFile.Builder builder = JavaFile.builder(javaTypeName.packageName(), typeSpec)
+        .addFileComment("$L", "Code generated by Wire protocol buffer compiler, do not edit.");
+    if (location != null) {
+      builder.addFileComment("\nSource file: $L", location);
+    }
+    JavaFile javaFile = builder.build();
+    try {
+      javaFile.writeTo(new File(generatedSourceDirectory));
+    } catch (IOException e) {
+      throw new IOException("Failed to write " + javaFile.packageName + "."
+          + javaFile.typeSpec.name + " to " + generatedSourceDirectory, e);
     }
   }
 }

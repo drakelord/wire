@@ -20,6 +20,7 @@ import java.io.IOException;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.fail;
 
 public class OneOfTest {
 
@@ -31,8 +32,7 @@ public class OneOfTest {
 
   private final ProtoAdapter<OneOfMessage> adapter = OneOfMessage.ADAPTER;
 
-  @Test
-  public void testOneOf() throws Exception {
+  @Test public void testOneOf() throws Exception {
     OneOfMessage.Builder builder = new OneOfMessage.Builder();
     validate(builder, null, null, INITIAL_BYTES);
 
@@ -53,6 +53,27 @@ public class OneOfTest {
 
     builder.foo(null);
     validate(builder, null, null, INITIAL_BYTES);
+  }
+
+  @Test public void buildFailsWhenBothFieldsAreNonNull() throws Exception {
+    OneOfMessage.Builder builder = new OneOfMessage.Builder();
+    builder.foo = 1;
+    builder.bar = "two";
+    try {
+      builder.build();
+      fail();
+    } catch (IllegalArgumentException expected) {
+      assertThat(expected).hasMessage("at most one of foo, bar, baz may be non-null");
+    }
+  }
+
+  @Test public void constructorFailsWhenBothFieldsAreNonNull() throws Exception {
+    try {
+      new OneOfMessage(1, "two", null);
+      fail();
+    } catch (IllegalArgumentException expected) {
+      assertThat(expected).hasMessage("at most one of foo, bar, baz may be non-null");
+    }
   }
 
   private void validate(OneOfMessage.Builder builder, Integer expectedFoo, String expectedBar,

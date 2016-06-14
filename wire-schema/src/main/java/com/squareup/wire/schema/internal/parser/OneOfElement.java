@@ -26,12 +26,14 @@ public abstract class OneOfElement {
   public static Builder builder() {
     return new AutoValue_OneOfElement.Builder()
         .documentation("")
-        .fields(ImmutableList.<FieldElement>of());
+        .fields(ImmutableList.<FieldElement>of())
+        .groups(ImmutableList.<GroupElement>of());
   }
 
   public abstract String name();
   public abstract String documentation();
   public abstract ImmutableList<FieldElement> fields();
+  public abstract ImmutableList<GroupElement> groups();
 
   public final String toSchema() {
     StringBuilder builder = new StringBuilder();
@@ -43,6 +45,12 @@ public abstract class OneOfElement {
         appendIndented(builder, field.toSchema());
       }
     }
+    if (!groups().isEmpty()) {
+      builder.append('\n');
+      for (GroupElement group : groups()) {
+        appendIndented(builder, group.toSchema());
+      }
+    }
     return builder.append("}\n").toString();
   }
 
@@ -51,6 +59,7 @@ public abstract class OneOfElement {
     Builder name(String name);
     Builder documentation(String documentation);
     Builder fields(ImmutableList<FieldElement> fields);
+    Builder groups(ImmutableList<GroupElement> groups);
     OneOfElement build();
   }
 }

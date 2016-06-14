@@ -22,14 +22,11 @@ import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
 import okio.Okio;
 import okio.Source;
 import org.junit.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Collections.singletonList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
@@ -41,16 +38,14 @@ public class WireCompilerErrorTest {
    * indexed by class name.
    */
   private void compile(String source) throws Exception {
-    CommandLineOptions options = new CommandLineOptions("/source",  "/target",
-        singletonList("test.proto"), new ArrayList<String>(), null, true,
-        Collections.<String>emptySet(), false, false);
-
     Path test = fileSystem.getPath("/source/test.proto");
     Files.createDirectory(fileSystem.getPath("/source"));
     Files.createDirectory(fileSystem.getPath("/target"));
     Files.write(test, source.getBytes(UTF_8));
 
-    new WireCompiler(options, fileSystem, new StringWireLogger(true)).compile();
+    WireCompiler compiler = WireCompiler.forArgs(fileSystem, new StringWireLogger(),
+        "--proto_path=/source", "--java_out=/target", "test.proto");
+    compiler.compile();
   }
 
   @Test public void testCorrect() throws Exception {
@@ -59,7 +54,8 @@ public class WireCompilerErrorTest {
         + "  optional int32 f = 1;\n"
         + "}\n");
     String generatedSource = readFile("/target/com/squareup/protos/test/Simple.java");
-    assertThat(generatedSource).contains("public final class Simple extends Message<Simple> {");
+    assertThat(generatedSource).contains(
+        "public final class Simple extends Message<Simple, Simple.Builder> {");
   }
 
   @Test public void testZeroTag() throws Exception {

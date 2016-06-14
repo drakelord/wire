@@ -15,21 +15,23 @@
  */
 package com.squareup.wire;
 
+import java.io.IOException;
 import java.io.ObjectStreamException;
+import java.io.OutputStream;
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import okio.Buffer;
+import okio.BufferedSink;
+import okio.ByteString;
 
-/**
- * Superclass for protocol buffer messages.
- */
-public abstract class Message<T extends Message<T>> implements Serializable {
+/** A protocol buffer message. */
+public abstract class Message<M extends Message<M, B>, B extends Message.Builder<M, B>>
+    implements Serializable {
   private static final long serialVersionUID = 0L;
 
-  /** Set to null until a field is added. */
-  transient TagMap tagMap;
+  private final transient ProtoAdapter<M> adapter;
+
+  /** Unknown fields, proto-encoded. We permit null to support magic deserialization. */
+  private final transient ByteString unknownFields;
 
   /** If not {@code 0} then the serialized size of this message. */
   transient int cachedSerializedSize = 0;
@@ -37,198 +39,122 @@ public abstract class Message<T extends Message<T>> implements Serializable {
   /** If non-zero, the hash code of this message. Accessed by generated code. */
   protected transient int hashCode = 0;
 
-  protected Message() {
+  protected Message(ProtoAdapter<M> adapter, ByteString unknownFields) {
+    if (adapter == null) throw new NullPointerException("adapter == null");
+    if (unknownFields == null) throw new NullPointerException("unknownFields == null");
+    this.adapter = adapter;
+    this.unknownFields = unknownFields;
   }
 
   /**
-   * Initializes any unknown field data to that stored in the given {@code Builder}.
+   * Returns a byte string containing the proto encoding of this message's unknown fields. Returns
+   * an empty byte string if this message has no unknown fields.
    */
-  protected final void setBuilder(Builder builder) {
-    if (builder.tagMapBuilder != null) {
-      tagMap = builder.tagMapBuilder.build();
-    }
-  }
-
-  /** Utility method to return a mutable copy of a given List. Used by generated code. */
-  protected static <T> List<T> copyOf(List<T> list) {
-    if (list == null) {
-      throw new NullPointerException("list == null");
-    }
-    return new ArrayList<>(list);
-  }
-
-  /** Utility method to return an immutable copy of a given List. Used by generated code. */
-  protected static <T> List<T> immutableCopyOf(List<T> list) {
-    if (list == null) {
-      throw new NullPointerException("list == null");
-    }
-    if (list == Collections.emptyList() || list instanceof ImmutableList) {
-      return list;
-    }
-    return Collections.unmodifiableList(new ArrayList<>(list));
+  public final ByteString unknownFields() {
+    ByteString result = this.unknownFields;
+    return result != null ? result : ByteString.EMPTY;
   }
 
   /**
-   * Returns the enumerated value tagged with the given integer value for the
-   * given enum class. If no enum value in the given class is initialized
-   * with the given integer tag value, an exception will be thrown.
-   *
-   * @param <E> the enum class type
+   * Returns a new builder initialized with the data in this message.
    */
-  public static <E extends Enum & WireEnum> E enumFromInt(Class<E> enumClass, int value) {
-    RuntimeEnumAdapter<E> adapter = ProtoAdapter.forEnum(enumClass);
-    return adapter.fromInt(value);
+  public abstract Builder<M, B> newBuilder();
+
+  /** Returns this message with any unknown fields removed. */
+  public final M withoutUnknownFields() {
+    return newBuilder().clearUnknownFields().build();
   }
 
-  int tagMapEncodedSize() {
-    return tagMap == null ? 0 : tagMap.encodedSize();
-  }
-
-  protected static boolean equals(Object a, Object b) {
-    return a == b || (a != null && a.equals(b));
-  }
-
-  /**
-   * Returns an immutable list of the extensions on this message in tag order.
-   */
-  public final Set<Extension<?, ?>> getExtensions() {
-    return tagMap != null
-        ? tagMap.extensions(false)
-        : Collections.<Extension<?, ?>>emptySet();
-  }
-
-  /**
-   * Returns the value for {@code extension} on this message, or null if no
-   * value is set.
-   */
-  public final <E> E getExtension(Extension<T, E> extension) {
-    return tagMap != null ? (E) tagMap.get(extension) : null;
-  }
-
-  /**
-   * Returns true if the extensions on this message equals the extensions of
-   * {@code other}.
-   */
-  protected final boolean extensionsEqual(Message<T> other) {
-    return tagMap != null
-        ? tagMap.equals(other.tagMap)
-        : other.tagMap == null;
-  }
-
-  /**
-   * Returns a hash code for the extensions on this message.
-   */
-  protected final int extensionsHashCode() {
-    return tagMap != null ? tagMap.hashCode() : 0;
-  }
-
-  @SuppressWarnings("unchecked")
   @Override public String toString() {
-    return ProtoAdapter.forMessage((Class<Message>) getClass()).toString(this);
+    //noinspection unchecked
+    return adapter.toString((M) this);
   }
 
-  private Object writeReplace() throws ObjectStreamException {
-    return new MessageSerializedForm(this, getClass());
+  protected final Object writeReplace() throws ObjectStreamException {
+    //noinspection unchecked
+    return new MessageSerializedForm(encode(), getClass());
+  }
+
+  /** The {@link ProtoAdapter} for encoding and decoding messages of this type. */
+  public final ProtoAdapter<M> adapter() {
+    return adapter;
+  }
+
+  /** Encode this message and write it to {@code stream}. */
+  public final void encode(BufferedSink sink) throws IOException {
+    //noinspection unchecked
+    adapter.encode(sink, (M) this);
+  }
+
+  /** Encode this message as a {@code byte[]}. */
+  public final byte[] encode() {
+    //noinspection unchecked
+    return adapter.encode((M) this);
+  }
+
+  /** Encode this message and write it to {@code stream}. */
+  public final void encode(OutputStream stream) throws IOException {
+    //noinspection unchecked
+    adapter.encode(stream, (M) this);
   }
 
   /**
    * Superclass for protocol buffer message builders.
    */
-  public abstract static class Builder<T extends Message<T>, B extends Builder<T, B>> {
+  public abstract static class Builder<T extends Message<T, B>, B extends Builder<T, B>> {
+    // Lazily-instantiated buffer and writer of this message's unknown fields.
+    Buffer unknownFieldsBuffer;
+    ProtoWriter unknownFieldsWriter;
 
-    TagMap.Builder tagMapBuilder;
-
-    /**
-     * Constructs a Builder with no unknown field data.
-     */
-    public Builder() {
+    protected Builder() {
     }
 
-    /**
-     * Constructs a Builder with unknown field data initialized to a copy of any unknown
-     * field data in the given {@link Message}.
-     */
-    public Builder(Message message) {
-      if (message != null && message.tagMap != null) {
-        this.tagMapBuilder = new TagMap.Builder(message.tagMap);
-      }
-    }
-
-    TagMap.Builder ensureTagMap() {
-      if (tagMapBuilder == null) {
-        tagMapBuilder = new TagMap.Builder();
-      }
-      return tagMapBuilder;
-    }
-
-    /**
-     * Create an exception for missing required fields.
-     *
-     * @param args Alternating field value and field name pairs.
-     */
-    protected static IllegalStateException missingRequiredFields(Object... args) {
-      StringBuilder sb = new StringBuilder();
-      String plural = "";
-      for (int i = 0, size = args.length; i < size; i += 2) {
-        if (args[i] == null) {
-          if (sb.length() > 0) {
-            plural = "s"; // Found more than one missing field
-          }
-          sb.append("\n  ");
-          sb.append(args[i + 1]);
+    public final Builder<T, B> addUnknownFields(ByteString unknownFields) {
+      if (unknownFields.size() > 0) {
+        if (unknownFieldsWriter == null) {
+          unknownFieldsBuffer = new Buffer();
+          unknownFieldsWriter = new ProtoWriter(unknownFieldsBuffer);
+        }
+        try {
+          unknownFieldsWriter.writeBytes(unknownFields);
+        } catch (IOException e) {
+          throw new AssertionError();
         }
       }
-      throw new IllegalStateException("Required field" + plural + " not set:" + sb);
+      return this;
+    }
+
+    public final Builder<T, B> addUnknownField(int tag, FieldEncoding fieldEncoding, Object value) {
+      if (unknownFieldsWriter == null) {
+        unknownFieldsBuffer = new Buffer();
+        unknownFieldsWriter = new ProtoWriter(unknownFieldsBuffer);
+      }
+      try {
+        ProtoAdapter<Object> protoAdapter = (ProtoAdapter<Object>) fieldEncoding.rawProtoAdapter();
+        protoAdapter.encodeWithTag(unknownFieldsWriter, tag, value);
+      } catch (IOException e) {
+        throw new AssertionError();
+      }
+      return this;
+    }
+
+    public final Builder<T, B> clearUnknownFields() {
+      unknownFieldsWriter = null;
+      unknownFieldsBuffer = null;
+      return this;
     }
 
     /**
-     * If {@code list} is null it will be replaced with {@link Collections#emptyList()}.
-     * Otherwise look for null items and throw {@link NullPointerException} if one is found.
+     * Returns a byte string with this message's unknown fields. Returns an empty byte string if
+     * this message has no unknown fields.
      */
-    protected static <T> List<T> canonicalizeList(List<T> list) {
-      if (list == null) {
-        throw new NullPointerException("list == null");
-      }
-      for (int i = 0, size = list.size(); i < size; i++) {
-        T element = list.get(i);
-        if (element == null) {
-          throw new NullPointerException("Element at index " + i + " is null");
-        }
-      }
-      return list;
+    public final ByteString buildUnknownFields() {
+      return unknownFieldsBuffer != null
+          ? unknownFieldsBuffer.clone().readByteString()
+          : ByteString.EMPTY;
     }
 
-    /**
-     * Returns the value for {@code extension} on this message, or null if no
-     * value is set.
-     */
-    public final <E> E getExtension(Extension<T, E> extension) {
-      return tagMapBuilder != null ? (E) tagMapBuilder.get(extension) : null;
-    }
-
-    /**
-     * Sets the value of {@code extension} on this builder to {@code value}.
-     */
-    public final <E> B setExtension(Extension<T, E> extension, E value) {
-      if (tagMapBuilder == null) {
-        tagMapBuilder = new TagMap.Builder();
-      } else {
-        tagMapBuilder.removeAll(extension.getTag());
-      }
-      if (value instanceof List) {
-        for (Object o : (List) value) {
-          tagMapBuilder.add(extension, o);
-        }
-      } else {
-        tagMapBuilder.add(extension, value);
-      }
-      return (B) this;
-    }
-
-    /**
-     * Returns an immutable {@link com.squareup.wire.Message} based on the fields that have been set
-     * in this builder.
-     */
+    /** Returns an immutable {@link Message} based on the fields that set in this builder. */
     public abstract T build();
   }
 }

@@ -15,7 +15,6 @@
  */
 package com.squareup.wire;
 
-import com.squareup.wire.protos.redacted.Ext_redacted_test;
 import com.squareup.wire.protos.redacted.NotRedacted;
 import com.squareup.wire.protos.redacted.Redacted;
 import com.squareup.wire.protos.redacted.RedactedChild;
@@ -25,7 +24,6 @@ import com.squareup.wire.protos.redacted.RedactedRepeated;
 import com.squareup.wire.protos.redacted.RedactedRequired;
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Collections;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,13 +31,20 @@ import static org.junit.Assert.fail;
 
 public class RuntimeMessageAdapterRedactTest {
   @Test public void string() throws IOException {
-    assertThat(new Redacted.Builder().a("a").b("b").c("c").build().toString())
-        .isEqualTo("Redacted{a=██, b=b, c=c}");
+    Redacted redacted = new Redacted.Builder().a("a").b("b").c("c").build();
+    assertThat(redacted.toString()).isEqualTo("Redacted{a=██, b=b, c=c}");
+
+    RedactedRepeated redactedRepeated = new RedactedRepeated.Builder()
+        .a(Arrays.asList("a", "b"))
+        .b(Arrays.asList(new Redacted("a", "b", "c", null), new Redacted("d", "e", "f", null)))
+        .build();
+    assertThat(redactedRepeated.toString()).isEqualTo(
+        "RedactedRepeated{a=██, b=[Redacted{a=██, b=b, c=c}, Redacted{a=██, b=e, c=f}]}");
   }
 
   @Test public void message() {
     Redacted message = new Redacted.Builder().a("a").b("b").c("c").build();
-    Redacted expected = new Redacted.Builder(message).a(null).build();
+    Redacted expected = message.newBuilder().a(null).build();
     assertThat(Redacted.ADAPTER.redact(message)).isEqualTo(expected);
   }
 
@@ -54,21 +59,21 @@ public class RuntimeMessageAdapterRedactTest {
         .b(new Redacted.Builder().a("a").b("b").c("c").build())
         .c(new NotRedacted.Builder().a("a").b("b").build())
         .build();
-    RedactedChild expected = new RedactedChild.Builder(message)
-        .b(new Redacted.Builder(message.b).a(null).build())
+    RedactedChild expected = message.newBuilder()
+        .b(message.b.newBuilder().a(null).build())
         .build();
     assertThat(RedactedChild.ADAPTER.redact(message)).isEqualTo(expected);
   }
 
   @Test public void redactedExtensions() {
     Redacted message = new Redacted.Builder()
-        .setExtension(Ext_redacted_test.extension, new RedactedExtension.Builder()
+        .extension(new RedactedExtension.Builder()
             .d("d")
             .e("e")
             .build())
         .build();
     Redacted expected = new Redacted.Builder()
-        .setExtension(Ext_redacted_test.extension, new RedactedExtension.Builder()
+        .extension(new RedactedExtension.Builder()
             .e("e")
             .build())
         .build();
@@ -81,9 +86,15 @@ public class RuntimeMessageAdapterRedactTest {
   }
 
   @Test public void repeatedField() {
-    RedactedRepeated message = new RedactedRepeated(Arrays.asList("a", "b"));
-    RedactedRepeated expected = new RedactedRepeated(Collections.<String>emptyList());
-    assertThat(RedactedRepeated.ADAPTER.redact(message)).isEqualTo(expected);
+    RedactedRepeated message = new RedactedRepeated.Builder()
+        .a(Arrays.asList("a", "b"))
+        .b(Arrays.asList(new Redacted("a", "b", "c", null), new Redacted("d", "e", "f", null)))
+        .build();
+    RedactedRepeated expected = new RedactedRepeated.Builder()
+        .b(Arrays.asList(new Redacted(null, "b", "c", null), new Redacted(null, "e", "f", null)))
+        .build();
+    RedactedRepeated actual = RedactedRepeated.ADAPTER.redact(message);
+    assertThat(actual).isEqualTo(expected);
   }
 
   @Test public void requiredRedactedFieldThrowsRedacting() {
@@ -91,9 +102,8 @@ public class RuntimeMessageAdapterRedactTest {
     try {
       adapter.redact(new RedactedRequired("a"));
       fail();
-    } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessage(
-          "Field com.squareup.wire.protos.redacted.RedactedRequired.a is REQUIRED and cannot be redacted.");
+    } catch (UnsupportedOperationException e) {
+      assertThat(e).hasMessage("Field 'a' is required and cannot be redacted.");
     }
   }
 

@@ -16,65 +16,80 @@
 package com.squareup.wire.schema;
 
 import com.google.common.collect.ImmutableList;
-import com.squareup.wire.ProtoType;
-import com.squareup.wire.schema.internal.parser.ExtendElement;
 import com.squareup.wire.schema.internal.parser.ProtoFileElement;
-import com.squareup.wire.schema.internal.parser.ServiceElement;
-import com.squareup.wire.schema.internal.parser.TypeElement;
-import java.util.NavigableSet;
+
+import static com.squareup.wire.schema.Options.FILE_OPTIONS;
 
 public final class ProtoFile {
-  private final ProtoFileElement element;
+  static final ProtoMember JAVA_PACKAGE = ProtoMember.get(FILE_OPTIONS, "java_package");
+
+  private final Location location;
+  private final ImmutableList<String> imports;
+  private final ImmutableList<String> publicImports;
+  private final String packageName;
   private final ImmutableList<Type> types;
   private final ImmutableList<Service> services;
   private final ImmutableList<Extend> extendList;
   private final Options options;
+  private final Syntax syntax;
+  private Object javaPackage;
 
-  private ProtoFile(ProtoFileElement element, ImmutableList<Type> types,
-      ImmutableList<Service> services, ImmutableList<Extend> extendList, Options options) {
-    this.element = element;
+  private ProtoFile(Location location, ImmutableList<String> imports,
+      ImmutableList<String> publicImports, String packageName, ImmutableList<Type> types,
+      ImmutableList<Service> services, ImmutableList<Extend> extendList, Options options,
+      Syntax syntax) {
+    this.location = location;
+    this.imports = imports;
+    this.publicImports = publicImports;
+    this.packageName = packageName;
     this.types = types;
     this.services = services;
     this.extendList = extendList;
     this.options = options;
+    this.syntax = syntax;
   }
 
   static ProtoFile get(ProtoFileElement protoFileElement) {
     String packageName = protoFileElement.packageName();
 
-    ImmutableList.Builder<Type> types = ImmutableList.builder();
-    for (TypeElement type : protoFileElement.types()) {
-      ProtoType protoType = ProtoType.get(packageName, type.name());
-      types.add(Type.get(packageName, protoType, type));
-    }
+    ImmutableList<Type> types = Type.fromElements(packageName, protoFileElement.types());
 
-    ImmutableList.Builder<Service> services = ImmutableList.builder();
-    for (ServiceElement service : protoFileElement.services()) {
-      ProtoType protoType = ProtoType.get(packageName, service.name());
-      services.add(Service.get(protoType, service));
-    }
+    ImmutableList<Service> services =
+        Service.fromElements(packageName, protoFileElement.services());
 
-    ImmutableList.Builder<Extend> wireExtends = ImmutableList.builder();
-    for (ExtendElement extend : protoFileElement.extendDeclarations()) {
-      wireExtends.add(new Extend(packageName, extend));
-    }
+    ImmutableList<Extend> wireExtends =
+        Extend.fromElements(packageName, protoFileElement.extendDeclarations());
 
     Options options = new Options(Options.FILE_OPTIONS, protoFileElement.options());
 
-    return new ProtoFile(protoFileElement, types.build(), services.build(),
-        wireExtends.build(), options);
+    return new ProtoFile(protoFileElement.location(), protoFileElement.imports(),
+        protoFileElement.publicImports(), packageName, types, services, wireExtends, options,
+        protoFileElement.syntax());
+  }
+
+  ProtoFileElement toElement() {
+    return ProtoFileElement.builder(location)
+        .imports(imports)
+        .publicImports(publicImports)
+        .packageName(packageName)
+        .types(Type.toElements(types))
+        .services(Service.toElements(services))
+        .extendDeclarations(Extend.toElements(extendList))
+        .options(options.toElements())
+        .syntax(syntax)
+        .build();
   }
 
   public Location location() {
-    return element.location();
+    return location;
   }
 
   ImmutableList<String> imports() {
-    return element.imports();
+    return imports;
   }
 
   ImmutableList<String> publicImports() {
-    return element.publicImports();
+    return publicImports;
   }
 
   /**
@@ -97,7 +112,11 @@ public final class ProtoFile {
   }
 
   public String packageName() {
-    return element.packageName();
+    return packageName;
+  }
+
+  public String javaPackage() {
+    return javaPackage != null ? String.valueOf(javaPackage) : null;
   }
 
   public ImmutableList<Type> types() {
@@ -108,7 +127,7 @@ public final class ProtoFile {
     return services;
   }
 
-  public ImmutableList<Extend> extendList() {
+  ImmutableList<Extend> extendList() {
     return extendList;
   }
 
@@ -117,10 +136,10 @@ public final class ProtoFile {
   }
 
   /** Returns a new proto file that omits types and services not in {@code identifiers}. */
-  ProtoFile retainAll(NavigableSet<String> identifiers) {
+  ProtoFile retainAll(Schema schema, MarkSet markSet) {
     ImmutableList.Builder<Type> retainedTypes = ImmutableList.builder();
     for (Type type : types) {
-      Type retainedType = type.retainAll(identifiers);
+      Type retainedType = type.retainAll(schema, markSet);
       if (retainedType != null) {
         retainedTypes.add(retainedType);
       }
@@ -128,14 +147,26 @@ public final class ProtoFile {
 
     ImmutableList.Builder<Service> retainedServices = ImmutableList.builder();
     for (Service service : services) {
-      Service retainedService = service.retainAll(identifiers);
+      Service retainedService = service.retainAll(schema, markSet);
       if (retainedService != null) {
         retainedServices.add(retainedService);
       }
     }
 
-    return new ProtoFile(
-        element, retainedTypes.build(), retainedServices.build(), extendList, options);
+    ProtoFile result = new ProtoFile(location, imports, publicImports, packageName,
+        retainedTypes.build(), retainedServices.build(), extendList,
+        options.retainAll(schema, markSet), syntax);
+    result.javaPackage = javaPackage;
+    return result;
+  }
+
+  void linkOptions(Linker linker) {
+    options.link(linker);
+    javaPackage = options().get(JAVA_PACKAGE);
+  }
+
+  @Override public String toString() {
+    return location().path();
   }
 
   /** Syntax version. */

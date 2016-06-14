@@ -16,11 +16,8 @@
 package com.squareup.wire.schema;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
-import com.squareup.wire.ProtoType;
 import com.squareup.wire.schema.internal.Util;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -33,7 +30,6 @@ import java.util.Map;
 final class Linker {
   private final ImmutableList<ProtoFile> protoFiles;
   private final Map<String, Type> protoTypeNames;
-  private final Map<ProtoType, Map<String, Field>> extensionsMap;
   private final Multimap<String, String> imports;
   private final List<String> errors;
   private final List<Object> contextStack;
@@ -41,7 +37,6 @@ final class Linker {
   public Linker(Iterable<ProtoFile> protoFiles) {
     this.protoFiles = ImmutableList.copyOf(protoFiles);
     this.protoTypeNames = new LinkedHashMap<>();
-    this.extensionsMap = new LinkedHashMap<>();
     this.imports = LinkedHashMultimap.create();
     this.contextStack = Collections.emptyList();
     this.errors = new ArrayList<>();
@@ -50,7 +45,6 @@ final class Linker {
   private Linker(Linker enclosing, Object additionalContext) {
     this.protoFiles = enclosing.protoFiles;
     this.protoTypeNames = enclosing.protoTypeNames;
-    this.extensionsMap = enclosing.extensionsMap;
     this.imports = enclosing.imports;
     this.contextStack = Util.concatenate(enclosing.contextStack, additionalContext);
     this.errors = enclosing.errors;
@@ -72,20 +66,6 @@ final class Linker {
       }
     }
 
-    // Register extensions. This needs the extensions to be linked.
-    for (ProtoFile protoFile : protoFiles) {
-      for (Extend extend : protoFile.extendList()) {
-        Map<String, Field> map = extensionsMap.get(extend.type());
-        if (map == null) {
-          map = new LinkedHashMap<>();
-          extensionsMap.put(extend.type(), map);
-        }
-        for (Field field : extend.fields()) {
-          map.put(field.packageName() + "." + field.name(), field);
-        }
-      }
-    }
-
     // Link proto files and services.
     for (ProtoFile protoFile : protoFiles) {
       Linker linker = withContext(protoFile);
@@ -100,7 +80,7 @@ final class Linker {
     // Link options. We can't link any options until we've linked all fields!
     for (ProtoFile protoFile : protoFiles) {
       Linker linker = withContext(protoFile);
-      protoFile.options().link(linker);
+      protoFile.linkOptions(linker);
       for (Type type : protoFile.types()) {
         type.linkOptions(linker);
       }
@@ -153,7 +133,7 @@ final class Linker {
   }
 
   private void register(Type type) {
-    protoTypeNames.put(type.name().toString(), type);
+    protoTypeNames.put(type.type().toString(), type);
     for (Type nestedType : type.nestedTypes()) {
       register(nestedType);
     }
@@ -165,50 +145,75 @@ final class Linker {
   }
 
   /** Returns the type name for the relative or fully-qualified name {@code name}. */
-  ProtoType resolveNamedType(String name) {
+  ProtoType resolveMessageType(String name) {
     return resolveType(name, true);
   }
 
-  private ProtoType resolveType(String name, boolean namedTypesOnly) {
-    ProtoType scalar = ProtoType.get(name);
-    if (scalar.isScalar()) {
-      if (namedTypesOnly) {
+  private ProtoType resolveType(String name, boolean messageOnly) {
+    ProtoType type = ProtoType.get(name);
+    if (type.isScalar()) {
+      if (messageOnly) {
         addError("expected a message but was %s", name);
       }
-      return scalar;
+      return type;
     }
 
+    if (type.isMap()) {
+      if (messageOnly) {
+        addError("expected a message but was %s", name);
+      }
+      ProtoType keyType = resolveType(type.keyType().toString(), false);
+      ProtoType valueType = resolveType(type.valueType().toString(), false);
+      return new ProtoType(keyType, valueType, name);
+    }
+
+    Type resolved = resolve(name, protoTypeNames);
+    if (resolved == null) {
+      addError("unable to resolve %s", name);
+      return ProtoType.BYTES; // Just return any placeholder.
+    }
+
+    if (messageOnly && !(resolved instanceof MessageType)) {
+      addError("expected a message but was %s", name);
+      return ProtoType.BYTES; // Just return any placeholder.
+    }
+
+    return resolved.type();
+  }
+
+  <T> T resolve(String name, Map<String, T> map) {
     if (name.startsWith(".")) {
       // If name starts with a '.', the rest of it is fully qualified.
-      Type type = protoTypeNames.get(name.substring(1));
-      if (type != null) return type.name();
+      T result = map.get(name.substring(1));
+      if (result != null) return result;
     } else {
       // We've got a name suffix, like 'Person' or 'protos.Person'. Start the search from with the
       // longest prefix like foo.bar.Baz.Quux, shortening the prefix until we find a match.
       String prefix = resolveContext();
       while (!prefix.isEmpty()) {
-        Type type = protoTypeNames.get(prefix + '.' + name);
-        if (type != null) return type.name();
+        T result = map.get(prefix + '.' + name);
+        if (result != null) return result;
 
         // Strip the last nested class name or package name from the end and try again.
         int dot = prefix.lastIndexOf('.');
         prefix = dot != -1 ? prefix.substring(0, dot) : "";
       }
-      Type type = protoTypeNames.get(name);
-      if (type != null) return type.name();
+      T result = map.get(name);
+      if (result != null) return result;
     }
-
-    addError("unable to resolve %s", name);
-    return ProtoType.BYTES; // Just return any placeholder.
+    return null;
   }
 
   private String resolveContext() {
     for (int i = contextStack.size() - 1; i >= 0; i--) {
       Object context = contextStack.get(i);
       if (context instanceof Type) {
-        return ((Type) context).name().toString();
+        return ((Type) context).type().toString();
       } else if (context instanceof ProtoFile) {
         String packageName = ((ProtoFile) context).packageName();
+        return packageName != null ? packageName : "";
+      } else if (context instanceof Field && ((Field) context).isExtension()) {
+        String packageName = ((Field) context).packageName();
         return packageName != null ? packageName : "";
       }
     }
@@ -228,51 +233,48 @@ final class Linker {
     return protoTypeNames.get(protoType.toString());
   }
 
-  /** Returns the map of known extensions for {@code extensionType}. */
-  public Map<String, Field> extensions(ProtoType extensionType) {
-    Map<String, Field> result = extensionsMap.get(extensionType);
-    return result != null ? result : ImmutableMap.<String, Field>of();
-  }
-
   /** Returns the field named {@code field} on the message type of {@code self}. */
   Field dereference(Field self, String field) {
-    String packageName = packageName();
     if (field.startsWith("[") && field.endsWith("]")) {
       field = field.substring(1, field.length() - 1);
     }
 
     Type type = protoTypeNames.get(self.type().toString());
     if (type instanceof MessageType) {
-      Field messageField = ((MessageType) type).field(field);
-      if (messageField != null) {
-        return messageField;
-      }
+      MessageType messageType = (MessageType) type;
+      Field messageField = messageType.field(field);
+      if (messageField != null) return messageField;
 
-      Map<String, Field> typeExtensions = extensionsMap.get(self.type());
-      Field extensionField = typeExtensions.get(field);
-      if (extensionField != null) {
-        return extensionField;
-      }
-
-      Field fullyQualifiedExtensionField = typeExtensions.get(packageName + "." + field);
-      if (fullyQualifiedExtensionField != null) {
-        return fullyQualifiedExtensionField;
-      }
+      Map<String, Field> typeExtensions = messageType.extensionFieldsMap();
+      Field extensionField = resolve(field, typeExtensions);
+      if (extensionField != null) return extensionField;
     }
 
     return null; // Unable to traverse this field path.
   }
 
   /** Validate that the tags of {@code fields} are unique and in range. */
-  void validateTags(Iterable<Field> fields, Map<String, Field> extensionFields) {
+  void validateFields(Iterable<Field> fields, ImmutableList<Reserved> reserveds) {
     Multimap<Integer, Field> tagToField = LinkedHashMultimap.create();
-    for (Field field : Iterables.concat(fields, extensionFields.values())) {
+    Multimap<String, Field> nameToField = LinkedHashMultimap.create();
+    for (Field field : fields) {
       int tag = field.tag();
       if (!Util.isValidTag(tag)) {
         withContext(field).addError("tag is out of range: %s", tag);
-      } else {
-        tagToField.put(tag, field);
       }
+
+      for (Reserved reserved : reserveds) {
+        if (reserved.matchesTag(tag)) {
+          withContext(field).addError("tag %s is reserved (%s)", tag, reserved.location());
+        }
+        if (reserved.matchesName(field.name())) {
+          withContext(field).addError("name '%s' is reserved (%s)", field.name(),
+              reserved.location());
+        }
+      }
+
+      tagToField.put(tag, field);
+      nameToField.put(field.qualifiedName(), field);
     }
 
     for (Map.Entry<Integer, Collection<Field>> entry : tagToField.asMap().entrySet()) {
@@ -281,6 +283,20 @@ final class Linker {
         error.append(String.format("multiple fields share tag %s:", entry.getKey()));
         int index = 1;
         for (Field field : entry.getValue()) {
+          error.append(String.format("\n  %s. %s (%s)",
+              index++, field.name(), field.location()));
+        }
+        addError("%s", error);
+      }
+    }
+
+    for (Collection<Field> collidingFields : nameToField.asMap().values()) {
+      if (collidingFields.size() > 1) {
+        Field first = collidingFields.iterator().next();
+        StringBuilder error = new StringBuilder();
+        error.append(String.format("multiple fields share name %s:", first.name()));
+        int index = 1;
+        for (Field field : collidingFields) {
           error.append(String.format("\n  %s. %s (%s)",
               index++, field.name(), field.location()));
         }
@@ -308,7 +324,7 @@ final class Linker {
         error.append(String.format("multiple enums share constant %s:", constant));
         for (EnumType enumType : entry.getValue()) {
           error.append(String.format("\n  %s. %s.%s (%s)",
-              index++, enumType.name(), constant, enumType.constant(constant).location()));
+              index++, enumType.type(), constant, enumType.constant(constant).location()));
         }
         addError("%s", error);
       }
@@ -316,7 +332,11 @@ final class Linker {
   }
 
   void validateImport(Location location, ProtoType type) {
+    // Map key type is always scalar. No need to validate it.
+    if (type.isMap()) type = type.valueType();
+
     if (type.isScalar()) return;
+
     String path = location.path();
     String requiredImport = get(type).location().path();
     if (!path.equals(requiredImport) && !imports.containsEntry(path, requiredImport)) {
@@ -355,12 +375,12 @@ final class Linker {
       } else if (context instanceof MessageType) {
         MessageType message = (MessageType) context;
         error.append(String.format("%s message %s (%s)",
-            prefix, message.name(), message.location()));
+            prefix, message.type(), message.location()));
 
       } else if (context instanceof EnumType) {
         EnumType enumType = (EnumType) context;
         error.append(String.format("%s enum %s (%s)",
-            prefix, enumType.name(), enumType.location()));
+            prefix, enumType.type(), enumType.location()));
 
       } else if (context instanceof Service) {
         Service service = (Service) context;

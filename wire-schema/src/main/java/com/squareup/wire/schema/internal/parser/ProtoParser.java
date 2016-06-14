@@ -17,10 +17,11 @@ package com.squareup.wire.schema.internal.parser;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
-import com.squareup.wire.schema.internal.Util;
+import com.google.common.collect.Range;
 import com.squareup.wire.schema.Field;
 import com.squareup.wire.schema.Location;
 import com.squareup.wire.schema.ProtoFile;
+import com.squareup.wire.schema.internal.Util;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -139,6 +140,8 @@ public final class ProtoParser {
       OptionElement result = readOption('=');
       if (readChar() != ';') throw unexpected("expected ';'");
       return result;
+    } else if (label.equals("reserved")) {
+      return readReserved(location, documentation);
     } else if (label.equals("message")) {
       return readMessage(location, documentation);
     } else if (label.equals("enum")) {
@@ -204,6 +207,8 @@ public final class ProtoParser {
     ImmutableList.Builder<TypeElement> nestedTypes = ImmutableList.builder();
     ImmutableList.Builder<ExtensionsElement> extensions = ImmutableList.builder();
     ImmutableList.Builder<OptionElement> options = ImmutableList.builder();
+    ImmutableList.Builder<ReservedElement> reserveds = ImmutableList.builder();
+    ImmutableList.Builder<GroupElement> groups = ImmutableList.builder();
 
     if (readChar() != '{') throw unexpected("expected '{'");
     while (true) {
@@ -217,6 +222,8 @@ public final class ProtoParser {
         fields.add((FieldElement) declared);
       } else if (declared instanceof OneOfElement) {
         oneOfs.add((OneOfElement) declared);
+      } else if (declared instanceof GroupElement) {
+        groups.add((GroupElement) declared);
       } else if (declared instanceof TypeElement) {
         nestedTypes.add((TypeElement) declared);
       } else if (declared instanceof ExtensionsElement) {
@@ -226,6 +233,8 @@ public final class ProtoParser {
       } else if (declared instanceof ExtendElement) {
         // Extend declarations always add in a global scope regardless of nesting.
         extendsList.add((ExtendElement) declared);
+      } else if (declared instanceof ReservedElement) {
+        reserveds.add((ReservedElement) declared);
       }
     }
     prefix = previousPrefix;
@@ -235,6 +244,8 @@ public final class ProtoParser {
         .nestedTypes(nestedTypes.build())
         .extensions(extensions.build())
         .options(options.build())
+        .reserveds(reserveds.build())
+        .groups(groups.build())
         .build();
   }
 
@@ -344,12 +355,19 @@ public final class ProtoParser {
         break;
 
       default:
-        if (syntax == ProtoFile.Syntax.PROTO_2) {
+        if (syntax != ProtoFile.Syntax.PROTO_3 && (!word.equals("map") || peekChar() != '<')) {
           throw unexpected(location, "unexpected label: " + word);
         }
         label = null;
         type = readDataType(word);
         break;
+    }
+
+    if (type.startsWith("map<") && label != null) {
+      throw unexpected(location, "'map' type cannot have label");
+    }
+    if (type.equals("group")) {
+      return readGroup(documentation, label);
     }
 
     return readField(location, documentation, label, type);
@@ -372,7 +390,12 @@ public final class ProtoParser {
     if (peekChar() == '[') {
       pos++;
       while (true) {
-        options.add(readOption('='));
+        OptionElement option = readOption('=');
+        if (option.name().equals("default")) {
+          builder.defaultValue(String.valueOf(option.value())); // Defaults aren't options!
+        } else {
+          options.add(option);
+        }
 
         // Check for optional ',' or closing ']'
         char c = peekChar();
@@ -398,6 +421,7 @@ public final class ProtoParser {
         .name(readName())
         .documentation(documentation);
     ImmutableList.Builder<FieldElement> fields = ImmutableList.builder();
+    ImmutableList.Builder<GroupElement> groups = ImmutableList.builder();
 
     if (readChar() != '{') throw unexpected("expected '{'");
     while (true) {
@@ -408,10 +432,83 @@ public final class ProtoParser {
       }
       Location location = location();
       String type = readDataType();
-      fields.add(readField(location, nestedDocumentation, null, type));
+      if (type.equals("group")) {
+        groups.add(readGroup(nestedDocumentation, null));
+      } else {
+        fields.add(readField(location, nestedDocumentation, null, type));
+      }
     }
     return builder.fields(fields.build())
+        .groups(groups.build())
         .build();
+  }
+
+  private GroupElement readGroup(String documentation, Field.Label label) {
+    String name = readWord();
+    if (readChar() != '=') {
+      throw unexpected("expected '='");
+    }
+    int tag = readInt();
+
+    GroupElement.Builder builder = GroupElement.builder()
+        .label(label)
+        .name(name)
+        .tag(tag)
+        .documentation(documentation);
+    ImmutableList.Builder<FieldElement> fields = ImmutableList.builder();
+
+    if (readChar() != '{') throw unexpected("expected '{'");
+    while (true) {
+      String nestedDocumentation = readDocumentation();
+      if (peekChar() == '}') {
+        pos++;
+        break;
+      }
+      Location location = location();
+      String fieldLabel = readWord();
+      Object field = readField(nestedDocumentation, location, fieldLabel);
+      if (!(field instanceof FieldElement)) {
+        throw unexpected("expected field declaration, was " + field);
+      }
+      fields.add((FieldElement) field);
+    }
+
+    return builder.fields(fields.build())
+        .build();
+  }
+
+  /** Reads a reserved tags and names list like "reserved 10, 12 to 14, 'foo';". */
+  private ReservedElement readReserved(Location location, String documentation) {
+    ImmutableList.Builder<Object> valuesBuilder = ImmutableList.builder();
+
+    while (true) {
+      char c = peekChar();
+      if (c == '"' || c == '\'') {
+        valuesBuilder.add(readQuotedString());
+      } else {
+        int tagStart = readInt();
+
+        c = peekChar();
+        if (c != ',' && c != ';') {
+          if (!readWord().equals("to")) {
+            throw unexpected("expected ',', ';', or 'to'");
+          }
+          int tagEnd = readInt();
+          valuesBuilder.add(Range.closed(tagStart, tagEnd));
+        } else {
+          valuesBuilder.add(tagStart);
+        }
+      }
+      c = readChar();
+      if (c == ';') break;
+      if (c != ',') throw unexpected("expected ',' or ';'");
+    }
+
+    ImmutableList<Object> values = valuesBuilder.build();
+    if (values.isEmpty()) {
+      throw unexpected("'reserved' must have at least one field name or tag");
+    }
+    return ReservedElement.create(location, documentation, values);
   }
 
   /** Reads extensions like "extensions 101;" or "extensions 101 to max;". */
@@ -446,7 +543,10 @@ public final class ProtoParser {
       subName = readName();
       c = readChar();
     }
-    if (c != keyValueSeparator) {
+    if (keyValueSeparator == ':' && c == '{') {
+      // In text format, values which are maps can omit a separator. Backtrack so it can be re-read.
+      pos--;
+    } else if (c != keyValueSeparator) {
       throw unexpected("expected '" + keyValueSeparator + "' in option");
     }
     OptionKindAndValue kindAndValue = readKindAndValue();
@@ -478,6 +578,7 @@ public final class ProtoParser {
       case '[':
         return OptionKindAndValue.of(OptionElement.Kind.LIST, readList());
       case '"':
+      case '\'':
         return OptionKindAndValue.of(OptionElement.Kind.STRING, readString());
       default:
         if (Character.isDigit(peeked) || peeked == '-') {
@@ -589,15 +690,28 @@ public final class ProtoParser {
         .documentation(documentation);
 
     if (readChar() != '(') throw unexpected("expected '('");
-    String requestType = readDataType();
-    builder.requestType(requestType);
+    String type;
+    String word = readWord();
+    if (word.equals("stream")) {
+      builder.requestStreaming(true);
+      type = readDataType();
+    } else {
+      type = readDataType(word);
+    }
+    builder.requestType(type);
     if (readChar() != ')') throw unexpected("expected ')'");
 
     if (!readWord().equals("returns")) throw unexpected("expected 'returns'");
 
     if (readChar() != '(') throw unexpected("expected '('");
-    String responseType = readDataType();
-    builder.responseType(responseType);
+    word = readWord();
+    if (word.equals("stream")) {
+      builder.responseStreaming(true);
+      type = readDataType();
+    } else {
+      type = readDataType(word);
+    }
+    builder.responseType(type);
     if (readChar() != ')') throw unexpected("expected ')'");
 
     if (peekChar() == '{') {
@@ -640,15 +754,24 @@ public final class ProtoParser {
   /** Reads a quoted or unquoted string and returns it. */
   private String readString() {
     skipWhitespace(true);
-    return peekChar() == '"' ? readQuotedString() : readWord();
+    char c = peekChar();
+    return c == '"' || c == '\'' ? readQuotedString() : readWord();
   }
 
   private String readQuotedString() {
-    if (readChar() != '"') throw new AssertionError();
+    char startQuote = readChar();
+    if (startQuote != '"' && startQuote != '\'') throw new AssertionError();
     StringBuilder result = new StringBuilder();
     while (pos < data.length) {
       char c = data[pos++];
-      if (c == '"') return result.toString();
+      if (c == startQuote) {
+        if (peekChar() == '"' || peekChar() == '\'') {
+          // Adjacent strings are concatenated. Consume new quote and continue reading.
+          startQuote = readChar();
+          continue;
+        }
+        return result.toString();
+      }
 
       if (c == '\\') {
         if (pos == data.length) throw unexpected("unexpected end of file");

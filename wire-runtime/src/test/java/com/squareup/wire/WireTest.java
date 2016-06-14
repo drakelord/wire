@@ -16,10 +16,10 @@
 package com.squareup.wire;
 
 import com.squareup.wire.protos.RepeatedAndPacked;
+import com.squareup.wire.protos.edgecases.NoFields;
 import com.squareup.wire.protos.person.Person;
 import com.squareup.wire.protos.person.Person.PhoneNumber;
 import com.squareup.wire.protos.person.Person.PhoneType;
-import com.squareup.wire.protos.simple.Ext_simple_message;
 import com.squareup.wire.protos.simple.ExternalMessage;
 import com.squareup.wire.protos.simple.SimpleMessage;
 import java.io.IOException;
@@ -27,12 +27,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import okio.Buffer;
+import okio.ByteString;
 import org.junit.Test;
+import squareup.protos.extension_collision.CollisionSubject;
 
-import static com.squareup.wire.protos.simple.Ext_simple_message.barext;
-import static com.squareup.wire.protos.simple.Ext_simple_message.bazext;
-import static com.squareup.wire.protos.simple.Ext_simple_message.fooext;
-import static com.squareup.wire.protos.simple.Ext_simple_message.nested_message_ext;
+import static java.util.Collections.singletonList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
@@ -121,7 +121,7 @@ public class WireTest {
         .required_int32(10)
         .build();
 
-    SimpleMessage.Builder builder = new SimpleMessage.Builder(message);
+    SimpleMessage.Builder builder = message.newBuilder();
     builder.required_int32 = 20;
     builder.repeated_double.add(30.5);
     builder.optional_int32 = 40;
@@ -154,11 +154,11 @@ public class WireTest {
   @Test
   public void testExtensions() throws Exception {
     ExternalMessage optional_external_msg = new ExternalMessage.Builder()
-        .setExtension(fooext, Arrays.asList(444, 555))
-        .setExtension(barext, 333)
-        .setExtension(bazext, 222)
-        .setExtension(nested_message_ext, new SimpleMessage.NestedMessage.Builder().bb(77).build())
-        .setExtension(Ext_simple_message.nested_enum_ext, SimpleMessage.NestedEnum.BAZ)
+        .fooext(Arrays.asList(444, 555))
+        .barext(333)
+        .bazext(222)
+        .nested_message_ext(new SimpleMessage.NestedMessage.Builder().bb(77).build())
+        .nested_enum_ext(SimpleMessage.NestedEnum.BAZ)
         .build();
 
     SimpleMessage msg = new SimpleMessage.Builder()
@@ -166,13 +166,12 @@ public class WireTest {
         .required_int32(456)
         .build();
 
-    assertThat(msg.optional_external_msg.getExtension(fooext)).containsExactly(444, 555);
-    assertThat(msg.optional_external_msg.getExtension(barext)).isEqualTo(new Integer(333));
-    assertThat(msg.optional_external_msg.getExtension(bazext)).isEqualTo(new Integer(222));
-    assertThat(msg.optional_external_msg.getExtension(nested_message_ext).bb)
+    assertThat(msg.optional_external_msg.fooext).containsExactly(444, 555);
+    assertThat(msg.optional_external_msg.barext).isEqualTo(new Integer(333));
+    assertThat(msg.optional_external_msg.bazext).isEqualTo(new Integer(222));
+    assertThat(msg.optional_external_msg.nested_message_ext.bb)
         .isEqualTo(new Integer(77));
-    assertThat(msg.optional_external_msg.getExtension(
-        Ext_simple_message.nested_enum_ext)).isEqualTo(SimpleMessage.NestedEnum.BAZ);
+    assertThat(msg.optional_external_msg.nested_enum_ext).isEqualTo(SimpleMessage.NestedEnum.BAZ);
 
     ProtoAdapter<SimpleMessage> adapter = SimpleMessage.ADAPTER;
 
@@ -180,15 +179,15 @@ public class WireTest {
     assertThat(result.length).isEqualTo(29);
 
     SimpleMessage newMsg = adapter.decode(result);
-    assertThat(newMsg.optional_external_msg.getExtension(fooext)).containsExactly(444, 555);
-    assertThat(newMsg.optional_external_msg.getExtension(barext)).isEqualTo(new Integer(333));
-    assertThat(newMsg.optional_external_msg.getExtension(bazext)).isEqualTo(new Integer(222));
+    assertThat(newMsg.optional_external_msg.fooext).containsExactly(444, 555);
+    assertThat(newMsg.optional_external_msg.barext).isEqualTo(new Integer(333));
+    assertThat(newMsg.optional_external_msg.bazext).isEqualTo(new Integer(222));
   }
 
   @Test
   public void testExtensionEnum() throws Exception {
     ExternalMessage optional_external_msg = new ExternalMessage.Builder()
-        .setExtension(Ext_simple_message.nested_enum_ext, SimpleMessage.NestedEnum.BAZ)
+        .nested_enum_ext(SimpleMessage.NestedEnum.BAZ)
         .build();
 
     SimpleMessage msg = new SimpleMessage.Builder()
@@ -196,7 +195,6 @@ public class WireTest {
         .required_int32(456)
         .build();
 
-    ExtensionRegistry simpleMessageExtensions = new ExtensionRegistry(Ext_simple_message.class);
     ProtoAdapter<SimpleMessage> adapter = SimpleMessage.ADAPTER;
 
     byte[] data = adapter.encode(msg);
@@ -205,12 +203,16 @@ public class WireTest {
     data[4] = 17;
 
     // Parse the altered message.
-    SimpleMessage newMsg = adapter.decode(data, simpleMessageExtensions);
+    SimpleMessage newMsg = adapter.decode(data);
 
     // Original value shows up as an extension.
-    assertThat(msg.toString()).contains("squareup.protos.simple.nested_enum_ext=BAZ");
+    assertThat(msg.toString()).contains("nested_enum_ext=BAZ");
     // New value is unknown in the tag map.
-    assertThat(newMsg.toString()).contains("ExternalMessage{129=[17]}");
+    ProtoReader reader = new ProtoReader(new Buffer().write(
+        newMsg.optional_external_msg.unknownFields()));
+    reader.beginMessage();
+    assertThat(reader.nextTag()).isEqualTo(129);
+    assertThat(reader.peekFieldEncoding().rawProtoAdapter().decode(reader)).isEqualTo(17L);
 
     // Serialized outputs are the same.
     byte[] newData = adapter.encode(newMsg);
@@ -218,28 +220,12 @@ public class WireTest {
   }
 
   @Test
-  public void extensionToString() {
-    assertThat(Ext_simple_message.fooext.toString()).isEqualTo(
-        "[REPEATED java.lang.Integer squareup.protos.simple.fooext = 125]");
-    assertThat(Ext_simple_message.barext.toString()).isEqualTo(
-        "[OPTIONAL java.lang.Integer squareup.protos.simple.barext = 126]");
-    assertThat(Ext_simple_message.bazext.toString()).isEqualTo(
-        "[OPTIONAL java.lang.Integer squareup.protos.simple.bazext = 127]");
-    assertThat(Ext_simple_message.nested_message_ext.toString()).isEqualTo(
-        "[OPTIONAL com.squareup.wire.protos.simple.SimpleMessage$NestedMessage "
-            + "squareup.protos.simple.nested_message_ext = 128]");
-    assertThat(Ext_simple_message.nested_enum_ext.toString()).isEqualTo(
-        "[OPTIONAL com.squareup.wire.protos.simple.SimpleMessage$NestedEnum"
-            + " squareup.protos.simple.nested_enum_ext = 129]");
-  }
-
-  @Test
   public void testExtensionsNoRegistry() throws Exception {
     ExternalMessage optional_external_msg =
         new ExternalMessage.Builder()
-            .setExtension(fooext, Arrays.asList(444, 555))
-            .setExtension(barext, 333)
-            .setExtension(bazext, 222)
+            .fooext(Arrays.asList(444, 555))
+            .barext(333)
+            .bazext(222)
             .build();
 
     SimpleMessage msg = new SimpleMessage.Builder()
@@ -247,9 +233,9 @@ public class WireTest {
         .required_int32(456)
         .build();
 
-    assertThat(msg.optional_external_msg.getExtension(fooext)).containsExactly(444, 555);
-    assertThat(msg.optional_external_msg.getExtension(barext)).isEqualTo(new Integer(333));
-    assertThat(msg.optional_external_msg.getExtension(bazext)).isEqualTo(new Integer(222));
+    assertThat(msg.optional_external_msg.fooext).containsExactly(444, 555);
+    assertThat(msg.optional_external_msg.barext).isEqualTo(new Integer(333));
+    assertThat(msg.optional_external_msg.bazext).isEqualTo(new Integer(222));
 
     ProtoAdapter<SimpleMessage> adapter = SimpleMessage.ADAPTER;
 
@@ -257,9 +243,9 @@ public class WireTest {
     assertThat(result.length).isEqualTo(21);
 
     SimpleMessage newMsg = adapter.decode(result);
-    assertThat(newMsg.optional_external_msg.getExtension(fooext)).isEqualTo(Arrays.asList(444, 555));
-    assertThat(newMsg.optional_external_msg.getExtension(barext)).isEqualTo(333);
-    assertThat(newMsg.optional_external_msg.getExtension(bazext)).isEqualTo(222);
+    assertThat(newMsg.optional_external_msg.fooext).isEqualTo(Arrays.asList(444, 555));
+    assertThat(newMsg.optional_external_msg.barext).isEqualTo(333);
+    assertThat(newMsg.optional_external_msg.bazext).isEqualTo(222);
   }
 
   @Test
@@ -330,10 +316,14 @@ public class WireTest {
     assertThat(result.phone.get(0).type).isNull();
 
     // The value 17 will be stored as an unknown varint with tag number 2
-    TagMap tagMap = ((Message) result.phone.get(0)).tagMap;
-    assertThat(tagMap.size()).isEqualTo(1);
-    assertThat(tagMap.get(Extension.unknown(PhoneNumber.class, 2, FieldEncoding.VARINT)))
-        .isEqualTo(Arrays.asList(17L));
+    ByteString unknownFields = result.phone.get(0).unknownFields();
+    ProtoReader reader = new ProtoReader(new Buffer().write(unknownFields));
+    long token = reader.beginMessage();
+    assertThat(reader.nextTag()).isEqualTo(2);
+    assertThat(reader.peekFieldEncoding()).isEqualTo(FieldEncoding.VARINT);
+    assertThat(FieldEncoding.VARINT.rawProtoAdapter().decode(reader)).isEqualTo(17L);
+    assertThat(reader.nextTag()).isEqualTo(-1);
+    reader.endMessage(token);
 
     // Serialize again, value is preserved
     byte[] newData = adapter.encode(result);
@@ -345,5 +335,86 @@ public class WireTest {
     RepeatedAndPacked data = RepeatedAndPacked.ADAPTER.decode(bytes);
     assertThat(data.rep_int32).isEqualTo(Collections.emptyList());
     assertThat(data.pack_int32).isEqualTo(Collections.emptyList());
+  }
+
+  @Test public void unmodifiedMutableListReusesImmutableInstance() {
+    PhoneNumber phone = new PhoneNumber.Builder().number("555-1212").type(PhoneType.WORK).build();
+    Person personWithPhone = new Person.Builder()
+        .id(1)
+        .name("Joe Schmoe")
+        .phone(singletonList(phone))
+        .build();
+    Person personNoPhone = new Person.Builder()
+        .id(1)
+        .name("Joe Schmoe")
+        .build();
+    try {
+      personWithPhone.phone.set(0, null);
+      fail();
+    } catch (UnsupportedOperationException expected) {
+    }
+    assertThat(personNoPhone.phone).isSameAs(Collections.emptyList());
+
+    // Round-trip these instances through the builder and ensure the lists are the same instances.
+    assertThat(personWithPhone.newBuilder().build().phone).isSameAs(personWithPhone.phone);
+    assertThat(personNoPhone.newBuilder().build().phone).isSameAs(personNoPhone.phone);
+  }
+
+  @Test public void listMustBeNonNull() {
+    Person.Builder builder = new Person.Builder();
+    builder.id = 1;
+    builder.name = "Joe Schmoe";
+    builder.phone = null;
+    try {
+      builder.build();
+      fail();
+    } catch (NullPointerException expected) {
+      assertThat(expected).hasMessage("phone == null");
+    }
+  }
+
+  @Test public void listElementsMustBeNonNull() {
+    Person.Builder builder = new Person.Builder();
+    builder.id = 1;
+    builder.name = "Joe Schmoe";
+    builder.phone.add(null);
+    try {
+      builder.build();
+      fail();
+    } catch (IllegalArgumentException expected) {
+      assertThat(expected).hasMessage("phone.contains(null)");
+    }
+  }
+
+  @Test public void builderListsAreAlwaysMutable() {
+    PhoneNumber phone = new PhoneNumber.Builder().number("555-1212").type(PhoneType.WORK).build();
+
+    Person.Builder newBuilder = new Person.Builder();
+    newBuilder.phone.add(phone);
+
+    Person person = new Person.Builder()
+        .id(1)
+        .name("Joe Schmoe")
+        .phone(singletonList(phone))
+        .build();
+    Person.Builder copyBuilder = person.newBuilder();
+    copyBuilder.phone.add(phone);
+  }
+
+  @Test public void emptyMessageToString() {
+    NoFields empty = new NoFields();
+    assertThat(empty.toString()).isEqualTo("NoFields{}");
+  }
+
+  @Test
+  public void extensionNameCollisions() throws Exception {
+    assertThat(CollisionSubject.FIELD_OPTIONS_F.squareup_protos_extension_collision_1_a)
+        .isEqualTo("1a");
+    assertThat(CollisionSubject.FIELD_OPTIONS_F.b)
+        .isEqualTo("1b");
+    assertThat(CollisionSubject.FIELD_OPTIONS_F.squareup_protos_extension_collision_2_a)
+        .isEqualTo("2a");
+    assertThat(CollisionSubject.FIELD_OPTIONS_F.c)
+        .isEqualTo("2c");
   }
 }

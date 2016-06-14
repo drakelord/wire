@@ -55,11 +55,17 @@ public class UnknownFieldsTest {
     // Serialized output should still contain the v.2 fields
     byte[] v1Bytes = v1Adapter.encode(v1);
 
-    // Unknown fields don't participate in equals() and hashCode()
+    // Unknown fields participate in equals() and hashCode()
     VersionOne v1Simple = new VersionOne.Builder().i(111).build();
-    assertThat(v1).isEqualTo(v1Simple);
-    assertThat(v1.hashCode()).isEqualTo(v1Simple.hashCode());
-    assertThat(v1Adapter.encode(v1)).isNotSameAs(v1Adapter.encode(v1Simple));
+    assertThat(v1).isNotEqualTo(v1Simple);
+    assertThat(v1.hashCode()).isNotEqualTo(v1Simple.hashCode());
+    assertThat(v1Adapter.encode(v1)).isNotEqualTo(v1Adapter.encode(v1Simple));
+
+    // Unknown fields can be removed for equals() and hashCode();
+    VersionOne v1Known = v1.withoutUnknownFields();
+    assertThat(v1Known).isEqualTo(v1Simple);
+    assertThat(v1Known.hashCode()).isEqualTo(v1Simple.hashCode());
+    assertThat(v1Adapter.encode(v1Known)).isEqualTo(v1Adapter.encode(v1Simple));
 
     // Re-parse
     VersionTwo v2B = v2Adapter.decode(v1Bytes);
@@ -71,7 +77,7 @@ public class UnknownFieldsTest {
     assertThat(v2B.v2_rs).containsExactly("1", "2");
 
     // "Modify" v1 via a merged builder, serialize, and re-parse
-    VersionOne v1Modified = new VersionOne.Builder(v1).i(777).build();
+    VersionOne v1Modified = v1.newBuilder().i(777).build();
     assertThat(v1Modified.i).isEqualTo(new Integer(777));
     byte[] v1ModifiedBytes = v1Adapter.encode(v1Modified);
 
